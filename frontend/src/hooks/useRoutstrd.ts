@@ -1,9 +1,4 @@
 import { request } from "src/utils/request";
-import {
-  computeRefundSend,
-  isRetryableMeltError,
-  shouldRequoteFee,
-} from "src/components/connections/routstr/refundLogic";
 
 // Module-level cache for getAllRoutstrdModels
 let cachedModels: { models: RoutstrdModel[] } | null = null;
@@ -103,13 +98,13 @@ export async function getAllRoutstrdModels(forceRefresh = false) {
   // Otherwise fetch and cache
   const qs = forceRefresh ? "?refresh=true" : "";
   const result = await routstrdFetch<{ models: RoutstrdModel[] }>(
-    `/models/all${qs}`
+    `/models${qs}`
   );
   if (result) {
     cachedModels = result;
     cacheTimestamp = Date.now();
   }
-  return result;
+  return cachedModels;
 }
 
 export async function nwcConnect(connectionString: string) {
@@ -237,13 +232,15 @@ export async function getRoutstrdUsageSummary() {
  */
 export async function fundFromHub(
   amount: number,
-  appId: number
+  appId: number,
+  onProgress?: (msg: string) => void
 ): Promise<number> {
   if (!appId) {
     throw new Error("fundFromHub requires the Routstr appId");
   }
 
   // 1. Get invoice from the Cashu mint
+  onProgress?.("Creating Lightning invoice at Cashu mint…");
   const invResult = await routstrdFetch<{
     invoice: string;
     amount: number;
@@ -259,6 +256,7 @@ export async function fundFromHub(
   }
 
   // 2. Pay invoice via Hub's Lightning node, from the Routstr isolated wallet
+  onProgress?.(`Paying ${amount} sats via Lightning…`);
   const encodedInvoice = encodeURIComponent(invoice);
   const payResult = await request<{
     id: number;
@@ -274,7 +272,7 @@ export async function fundFromHub(
     throw new Error(`Hub payment failed: ${payResult?.state || "no response"}`);
   }
 
-  // 3. Confirm balance increased
+  onProgress?.("Deposit complete");
   return amount;
 }
 
@@ -304,10 +302,73 @@ export class PartialRefundError extends Error {
   }
 }
 
-export async function refundFromHub(
+// previewRefund creates the melt invoice and quotes the fee so the confirm
+// screen shows exact numbers. Returns the invoice (to be passed to
+// refundFromHub) along with balance/fee/net. The invoice IS the one that
+// will be melted — no throwaway invoices, no fee discrepancy.
+export async function previewRefund(
   appId: number,
   mintUrl: string
-): Promise<number> {
+): Promise<{
+  invoice: string;
+  balance: number;
+  fee: number;
+  net: number;
+} | null> {
+  const bal = await getRoutstrdBalance();
+  const walletBal = bal?.balances
+    ? Object.values(bal.balances).reduce((a, b) => a + b, 0)
+    : 0;
+  if (walletBal <= 0) {
+    return null;
+  }
+
+  // Estimate conservatively (3 sats). Create the invoice at balance−3,
+  // then quote the fee. If the actual fee differs, recreate at balance−fee.
+  // The invoice returned IS the one that gets melted.
+  let fee = 3;
+  let net = Math.max(1, walletBal - fee);
+  let invoice = await createAppScopedInvoice(net, appId);
+  fee = await fetchMeltFee(invoice, mintUrl);
+
+  if (fee !== 3 && walletBal > fee) {
+    // Fee was different from estimate — recreate at the correct net.
+    net = walletBal - fee;
+    invoice = await createAppScopedInvoice(net, appId);
+  }
+
+  return { invoice, balance: walletBal, fee, net };
+}
+
+async function fetchMeltFee(invoice: string, mintUrl: string): Promise<number> {
+  const resp = await fetch(
+    `${mintUrl.replace(/\/+$/, "")}/v1/melt/quote/bolt11`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ request: invoice, unit: "sat" }),
+    }
+  );
+  if (!resp.ok) {
+    return 0;
+  }
+  const quote: unknown = await resp.json();
+  if (
+    typeof quote === "object" &&
+    quote !== null &&
+    "fee_reserve" in quote &&
+    typeof (quote as { fee_reserve?: unknown }).fee_reserve === "number"
+  ) {
+    return (quote as { fee_reserve: number }).fee_reserve;
+  }
+  return 0;
+}
+
+export async function refundFromHub(
+  appId: number,
+  mintUrl: string,
+  prebuiltInvoice?: string
+): Promise<{ refunded: number; fee: number }> {
   if (!appId) {
     throw new Error("refundFromHub requires the Routstr appId");
   }
@@ -315,123 +376,153 @@ export async function refundFromHub(
     throw new Error("refundFromHub requires the active mint URL");
   }
 
-  let totalRefunded = 0;
-  // Fee-quote cache: the mint's fee is flat for small amounts, so consecutive
-  // passes with a similar balance reuse the last quote instead of creating a
-  // throwaway app-scoped invoice on every pass (up to 6 pending per refund).
-  let lastQuotedBalance = 0;
-  let lastFee = 0;
+  const bal = await getRoutstrdBalance();
+  const walletBal = bal?.balances
+    ? Object.values(bal.balances).reduce((a, b) => a + b, 0)
+    : 0;
+  if (walletBal <= 0) {
+    return { refunded: 0, fee: 0 };
+  }
 
-  for (let pass = 0; pass < 6; pass++) {
-    const bal = await getRoutstrdBalance();
-    const walletBal = bal?.balances
-      ? Object.values(bal.balances).reduce((a, b) => a + b, 0)
-      : 0;
-    if (walletBal <= 0) {
-      break;
-    }
+  let meltInvoice: string;
+  // eslint-disable-next-line no-useless-assignment
+  let fee = 0;
 
-    // 1. Quote the mint's melt fee for the FULL remaining balance. Reuse the
-    //    last quote when the balance barely moved (|Δ| < 10 sats).
-    let fee = lastFee;
-    if (shouldRequoteFee(lastQuotedBalance, walletBal)) {
-      const quoteInvoice = await createAppScopedInvoice(walletBal, appId);
-      fee = await getMeltQuoteFee(quoteInvoice, mintUrl);
-      lastQuotedBalance = walletBal;
-      lastFee = fee;
-    }
-
-    const send = computeRefundSend(walletBal, fee);
+  if (prebuiltInvoice) {
+    // Use the invoice created by previewRefund — same invoice, same fee.
+    meltInvoice = prebuiltInvoice;
+    fee = await fetchMeltFee(meltInvoice, mintUrl);
+  } else {
+    // Standalone call (no preview): quote + create fresh.
+    const quoteInvoice = await createAppScopedInvoice(walletBal, appId);
+    fee = await fetchMeltFee(quoteInvoice, mintUrl);
+    const send = Math.max(0, walletBal - fee);
     if (send <= 0) {
-      // The fee covers the whole remainder — nothing meltable left. This is
-      // the floor: any sub-fee balance cannot be moved.
-      break;
+      return { refunded: 0, fee };
     }
+    meltInvoice = await createAppScopedInvoice(send, appId);
+  }
 
+  if (!meltInvoice) {
+    return { refunded: 0, fee: 0 };
+  }
+
+  // 2. Melt the invoice. If proof-selection causes a "non-negative" error,
+  //    retry with 1 sat less (creates new invoices for each attempt).
+  let actualRefunded = 0;
+  const estimatedNet = prebuiltInvoice
+    ? walletBal - fee // net = balance - fee from prebuilt invoice
+    : walletBal - fee;
+
+  for (let attempt = estimatedNet; attempt >= 1; attempt--) {
+    const invoice =
+      prebuiltInvoice && attempt === estimatedNet
+        ? prebuiltInvoice // first attempt uses the prebuilt invoice
+        : await createAppScopedInvoice(attempt, appId);
     try {
-      // 2. Melt `send` (balance − fee) via an app-scoped invoice. Proofs
-      //    cover send + the melt's own fee quote, and the mint returns any
-      //    change to the wallet, drained on the next pass.
-      const meltInvoice = await createAppScopedInvoice(send, appId);
-      const meltResult = await routstrdFetch<{ message: string }>(
-        "/wallet/send/bolt11",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ invoice: meltInvoice, mintUrl }),
-          timeoutMs: 90_000,
-        }
-      );
-      if (!meltResult?.message) {
-        throw new Error("Melt failed: no confirmation from daemon");
-      }
-      totalRefunded += send;
+      void (await routstrdFetch<{ message: string }>("/wallet/send/bolt11", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ invoice, mintUrl }),
+        timeoutMs: 90_000,
+      }));
+      actualRefunded = attempt;
+      break;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (isRetryableMeltError(message)) {
-        // Known coco-cashu-core degenerate case: when the selected proofs
-        // exactly equal invoice + fee, the swap path computes a zero/negative
-        // keep amount ("amount must be a non-negative number"). Retry with a
-        // smaller send — the wallet's per-proof input fee can also add 1-2
-        // sats at small denominations. The next pass re-quotes anyway.
-        let succeeded = false;
-        for (let shrink = 1; shrink <= 4 && !succeeded; shrink++) {
-          const retrySend = send - shrink;
-          if (retrySend <= 0) {
-            break;
-          }
-          try {
-            const retryInvoice = await createAppScopedInvoice(retrySend, appId);
-            const retryMelt = await routstrdFetch<{ message: string }>(
-              "/wallet/send/bolt11",
-              {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ invoice: retryInvoice, mintUrl }),
-                timeoutMs: 90_000,
-              }
-            );
-            if (retryMelt?.message) {
-              totalRefunded += retrySend;
-              succeeded = true;
-            }
-          } catch (retryError) {
-            const retryMessage =
-              retryError instanceof Error
-                ? retryError.message
-                : String(retryError);
-            if (isRetryableMeltError(retryMessage)) {
-              // Same degenerate/insufficient condition — try the next
-              // smaller send.
-              continue;
-            }
-            // A non-retryable retry failure: preserve any progress made by
-            // earlier passes (including earlier successful shrinks).
-            if (totalRefunded > 0) {
-              throw new PartialRefundError(totalRefunded, retryMessage);
-            }
-            throw retryError;
-          }
-        }
-        if (!succeeded) {
-          // Earlier passes already moved sats to the app wallet — surface the
-          // partial progress instead of a blanket failure.
-          if (totalRefunded > 0) {
-            throw new PartialRefundError(totalRefunded, message);
-          }
+      const msg = error instanceof Error ? error.message : String(error);
+      if (/insufficient|not enough (funds|proofs)|non-negative/i.test(msg)) {
+        if (attempt <= 1) {
           throw error;
         }
         continue;
-      }
-      if (totalRefunded > 0) {
-        // A later pass failed after earlier melts succeeded.
-        throw new PartialRefundError(totalRefunded, message);
       }
       throw error;
     }
   }
 
-  return totalRefunded;
+  // 3. Verify wallet is zero. Loop cleanup until the balance is truly
+  //    gone or falls below the mint's minimum melt threshold. Track
+  //    cleanup sats so the final fee is accurate.
+  for (let cleanupPass = 0; cleanupPass < 5; cleanupPass++) {
+    const verifyBal = await getRoutstrdBalance();
+    const remaining = verifyBal?.balances
+      ? Object.values(verifyBal.balances).reduce((a, b) => a + b, 0)
+      : 0;
+    if (remaining <= 0) {
+      break;
+    }
+    const cleaned = await cleanupRemainder(remaining, appId, mintUrl);
+    if (typeof cleaned === "number") {
+      actualRefunded += cleaned;
+    } else {
+      break; // sub-fee dust — can't melt any further
+    }
+  }
+
+  // Fee = original balance − actual total refunded.
+  // This accounts for: mint fee + proof-selection shrinkage + cleanup melts.
+  const actualFee = walletBal - actualRefunded;
+  return { refunded: actualRefunded, fee: actualFee };
+}
+
+// cleanupRemainder drains the last few sats from the wallet.
+// Returns the amount melted, or null if the balance is sub-fee dust.
+// Quotes fee fresh for the tiny balance melt — no caching, no stale quotes.
+async function cleanupRemainder(
+  remaining: number,
+  appId: number,
+  mintUrl: string
+): Promise<number | null> {
+  const quoteInvoice = await createAppScopedInvoice(remaining, appId);
+  const feeResp = await fetch(
+    `${mintUrl.replace(/\/+$/, "")}/v1/melt/quote/bolt11`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ request: quoteInvoice, unit: "sat" }),
+    }
+  );
+
+  let fee = 0;
+  if (feeResp.ok) {
+    const quote: unknown = await feeResp.json();
+    if (
+      typeof quote === "object" &&
+      quote !== null &&
+      "fee_reserve" in quote &&
+      typeof (quote as { fee_reserve?: unknown }).fee_reserve === "number"
+    ) {
+      fee = (quote as { fee_reserve: number }).fee_reserve;
+    }
+  }
+
+  const send = Math.max(0, remaining - fee);
+  if (send <= 0) {
+    return null; // sub-fee dust — genuinely un-meltable
+  }
+
+  for (let attempt = send; attempt >= 1; attempt--) {
+    const invoice = await createAppScopedInvoice(attempt, appId);
+    try {
+      await routstrdFetch<{ message: string }>("/wallet/send/bolt11", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ invoice, mintUrl }),
+        timeoutMs: 90_000,
+      });
+      return attempt;
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      if (/insufficient|not enough (funds|proofs)|non-negative/i.test(msg)) {
+        if (attempt <= 1) {
+          return null;
+        }
+        continue;
+      }
+      return null; // non-retryable — give up on cleanup
+    }
+  }
+  return null;
 }
 
 async function createAppScopedInvoice(
@@ -448,41 +539,4 @@ async function createAppScopedInvoice(
     throw new Error("Failed to create invoice on Hub");
   }
   return invoice;
-}
-
-async function getMeltQuoteFee(
-  invoice: string,
-  mintUrl: string
-): Promise<number> {
-  // The mint quote endpoint has no built-in timeout — abort after 90s so a
-  // slow/unresponsive mint cannot hang the refund drain loop.
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 90_000);
-  try {
-    const mtResp = await fetch(
-      `${mintUrl.replace(/\/+$/, "")}/v1/melt/quote/bolt11`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ request: invoice, unit: "sat" }),
-        signal: controller.signal,
-      }
-    );
-    if (mtResp.ok) {
-      const quote: unknown = await mtResp.json();
-      if (
-        typeof quote === "object" &&
-        quote !== null &&
-        "fee_reserve" in quote &&
-        typeof (quote as { fee_reserve?: unknown }).fee_reserve === "number"
-      ) {
-        return (quote as { fee_reserve: number }).fee_reserve;
-      }
-    }
-  } catch {
-    // fall through — fee unknown, treat as 0
-  } finally {
-    clearTimeout(timer);
-  }
-  return 0;
 }

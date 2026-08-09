@@ -25,7 +25,12 @@ export function shouldRequoteFee(
   balanceSat: number
 ): boolean {
   return (
-    lastQuotedBalance === 0 || Math.abs(balanceSat - lastQuotedBalance) >= 10
+    lastQuotedBalance === 0 ||
+    Math.abs(balanceSat - lastQuotedBalance) >= 10 ||
+    // Always re-quote for small balances so we don't reuse a stale fee
+    // that exceeds the tiny remainder and leaves dust (hit 2026-08-09:
+    // refund left 1 sat because the cached fee was ≥ the balance).
+    balanceSat <= 10
   );
 }
 
