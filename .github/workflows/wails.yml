@@ -130,6 +130,7 @@ jobs:
 
       - name: Import Code-Signing Certificates for macOS
         if: >-
+          github.repository_owner == 'getAlby' &&
           runner.os == 'macOS' &&
           (
             !github.event.pull_request ||
@@ -199,6 +200,7 @@ jobs:
 
       - name: Sign the macOS binary
         if: >-
+          github.repository_owner == 'getAlby' &&
           runner.os == 'macOS' &&
           (
             !github.event.pull_request ||
@@ -239,6 +241,7 @@ jobs:
 
       - name: Notarize the DMG image
         if: >-
+          github.repository_owner == 'getAlby' &&
           runner.os == 'macOS' &&
           (
             !github.event.pull_request ||
