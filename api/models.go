@@ -47,7 +47,6 @@ type API interface {
 	ListTransactions(ctx context.Context, appId *uint, limit uint64, offset uint64, filters ListTransactionsFilters) (*ListTransactionsResponse, error)
 	ListOnchainTransactions(ctx context.Context) ([]OnchainTransaction, error)
 	SendPayment(ctx context.Context, invoice string, amountMsat *uint64, metadata map[string]interface{}, fromAppId *uint) (*SendPaymentResponse, error)
-	CreateInvoice(ctx context.Context, amountMsat uint64, description string, appId *uint) (*MakeInvoiceResponse, error)
 	CreateInvoice(ctx context.Context, amountMsat uint64, description string, toAppId *uint) (*MakeInvoiceResponse, error)
 	LookupInvoice(ctx context.Context, paymentHash string) (*LookupInvoiceResponse, error)
 	SetTransactionUserLabels(ctx context.Context, id uint, labels map[string]string) error
@@ -341,6 +340,9 @@ type InfoResponse struct {
 	JitChannelsEnabled            bool                `json:"jitChannelsEnabled"`
 	HideUpdateBanner              bool                `json:"hideUpdateBanner"`
 	SupportsBolt12                bool                `json:"supportsBolt12"`
+	RoutstrdHealthy               bool                `json:"routstrdHealthy"`
+	CocodHealthy                  bool                `json:"cocodHealthy"`
+	RoutstrdVersion               string              `json:"routstrdVersion"`
 }
 
 type UpdateSettingsRequest struct {

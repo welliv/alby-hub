@@ -1566,6 +1566,15 @@ func (api *api) GetInfo(ctx context.Context) (*InfoResponse, error) {
 	info.SupportsBolt12 = backendType == config.LDKBackendType || backendType == config.CLNBackendType
 	info.AutoUnlockPasswordEnabled = autoUnlockPassword != ""
 	info.AutoUnlockPasswordSupported = api.cfg.GetEnv().IsDefaultClientId()
+
+	// Routstrd AI gateway status
+	if rs := api.svc.GetRoutstrdService(); rs != nil {
+		routstrdOk, cocodOk := rs.Status()
+		info.RoutstrdHealthy = routstrdOk
+		info.CocodHealthy = cocodOk
+		info.RoutstrdVersion = rs.RoutstrdVersion()
+	}
+
 	info.Relays = []InfoResponseRelay{}
 	for _, relayStatus := range api.svc.GetRelayStatuses() {
 		info.Relays = append(info.Relays, InfoResponseRelay{

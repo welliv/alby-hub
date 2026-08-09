@@ -42,6 +42,10 @@ type RoutstrdService struct {
 	lastNwcReconnect time.Time
 	// lastAutoRefill gates how often the Hub-side Cashu auto-refill runs
 	lastAutoRefill time.Time
+	// autoRefillFailStreak counts consecutive refill failures. After 3
+	// consecutive failures the loop disables auto-refill and publishes an
+	// event so the UI can surface the outage.
+	autoRefillFailStreak int
 	// autoRefillMu serializes auto-refill checks: the 15s supervision ticker
 	// and the Start-triggered immediate check run concurrently and would
 	// otherwise both pass the cooldown gate and double-refill (hit 2026-08-01)
@@ -84,6 +88,15 @@ type AutoRefillConfig struct {
 	Threshold  int64 `json:"threshold"`
 	Amount     int64 `json:"amount"`
 	CooldownMs int64 `json:"cooldownMs"`
+}
+
+// userHomeDir returns the user's home directory, preferring os.UserHomeDir()
+// (which reads /etc/passwd) over the HOME environment variable.
+func userHomeDir() string {
+	if home, err := os.UserHomeDir(); err == nil {
+		return home
+	}
+	return os.Getenv("HOME")
 }
 
 // NewRoutstrdService creates a new routstrd service manager.
@@ -295,7 +308,7 @@ func (r *RoutstrdService) checkRoutstrdHealth() bool {
 
 // checkCocodHealth prefers socket existence + PID alive; never hangs on CLI ping.
 func (r *RoutstrdService) checkCocodHealth() bool {
-	home := os.Getenv("HOME")
+	home := userHomeDir()
 	socketPath := filepath.Join(home, ".cocod", "cocod.sock")
 	if _, err := os.Stat(socketPath); err != nil {
 		// Socket missing: daemon is down, or hung on startup (mint rate
@@ -328,7 +341,7 @@ func (r *RoutstrdService) checkCocodHealth() bool {
 func (r *RoutstrdService) startCocod() error {
 	logger.Logger.Info("Starting cocod daemon...")
 
-	home := os.Getenv("HOME")
+	home := userHomeDir()
 	pidPath := filepath.Join(home, ".cocod", "cocod.pid")
 	socketPath := filepath.Join(home, ".cocod", "cocod.sock")
 
@@ -367,6 +380,13 @@ func (r *RoutstrdService) startCocod() error {
 	if cocodBin == "" {
 		return fmt.Errorf("cocod binary not found in PATH or ~/.bun/bin")
 	}
+
+	// Ensure wallet is initialized (idempotent — no-op if already done).
+	// Without this, every wallet operation returns "Wallet not initialized".
+	initCmd := exec.Command(cocodBin, "init")
+	initCmd.Stdout = nil
+	initCmd.Stderr = nil
+	_ = initCmd.Run()
 
 	cmd := exec.Command(cocodBin, "daemon")
 	cmd.Stdout = nil
@@ -421,8 +441,8 @@ func (r *RoutstrdService) startRoutstrd() error {
 	if routstrdBin != "" {
 		cmd := exec.Command(routstrdBin, "start", "--port", "8008")
 		cmd.Env = append(os.Environ(),
-			"PATH="+filepath.Join(os.Getenv("HOME"), ".bun", "bin")+":"+os.Getenv("PATH"),
-			"HOME="+os.Getenv("HOME"),
+			"PATH="+filepath.Join(userHomeDir(), ".bun", "bin")+":"+os.Getenv("PATH"),
+			"HOME="+userHomeDir(),
 		)
 		cmd.Stdout = nil
 		cmd.Stderr = nil
@@ -439,7 +459,7 @@ func (r *RoutstrdService) startRoutstrd() error {
 	}
 
 	// Fallback: direct bun daemon
-	home := os.Getenv("HOME")
+	home := userHomeDir()
 	bunBin := r.resolveBinary("bun")
 	if bunBin == "" {
 		return fmt.Errorf("bun binary not found")
@@ -483,7 +503,7 @@ func (r *RoutstrdService) stopRoutstrd() {
 
 func (r *RoutstrdService) resolveBinary(name string) string {
 	// Prefer ~/.bun/bin
-	home := os.Getenv("HOME")
+	home := userHomeDir()
 	candidates := []string{
 		filepath.Join(home, ".bun", "bin", name),
 		filepath.Join("/usr/local/bin", name),
@@ -498,6 +518,21 @@ func (r *RoutstrdService) resolveBinary(name string) string {
 		return path
 	}
 	return ""
+}
+
+// RoutstrdVersion returns the installed routstrd version (e.g. "0.3.11")
+// by running `routstrd --version`. Returns "" if the binary is not found
+// or the command fails.
+func (r *RoutstrdService) RoutstrdVersion() string {
+	bin := r.resolveBinary("routstrd")
+	if bin == "" {
+		return ""
+	}
+	out, err := exec.Command(bin, "--version").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func (r *RoutstrdService) processExists(pid int) bool {
@@ -614,7 +649,7 @@ func (r *RoutstrdService) checkNwcConnected() bool {
 }
 
 func (r *RoutstrdService) readNwcConnectionString() (string, error) {
-	home := os.Getenv("HOME")
+	home := userHomeDir()
 	cfgPath := filepath.Join(home, ".routstrd", "config.json")
 	data, err := os.ReadFile(cfgPath)
 	if err != nil {
@@ -692,10 +727,18 @@ func (r *RoutstrdService) checkAutoRefill(ctx context.Context) {
 
 	balance, err := r.getCashuWalletBalance()
 	if err != nil {
+		r.mu.Lock()
+		r.autoRefillFailStreak++
+		streak := r.autoRefillFailStreak
+		r.mu.Unlock()
 		r.recordAutoRefill(nowT, 0, 0, time.Time{}, fmt.Sprintf("could not read Cashu wallet balance: %v", err))
 		logger.Logger.WithError(err).Debug("auto-refill: could not read Cashu wallet balance")
+		if streak >= 3 {
+			r.disableAutoRefill(app, fmt.Sprintf("3 consecutive failures reading balance: %v", err))
+		}
 		return
 	}
+
 	if !shouldAutoRefill(balance, cfg.Threshold, last, nowT, cfg.CooldownMs) {
 		// Healthy (pool above the line) or within the cooldown — nothing to do
 		r.recordAutoRefill(nowT, balance, 0, time.Time{}, "")
@@ -710,8 +753,23 @@ func (r *RoutstrdService) checkAutoRefill(ctx context.Context) {
 	resp, err := client.Post("http://127.0.0.1:8008/wallet/receive/bolt11", "application/json", bytes.NewReader(invBody))
 	if err != nil {
 		r.markAutoRefillAttempted(nowT)
+		r.mu.Lock()
+		r.autoRefillFailStreak++
+		streak := r.autoRefillFailStreak
+		r.mu.Unlock()
 		r.recordAutoRefill(nowT, balance, 0, time.Time{}, fmt.Sprintf("failed to create mint invoice: %v", err))
+		r.svc.eventPublisher.Publish(&events.Event{
+			Event: "routstrd_autorefill_failed",
+			Properties: map[string]interface{}{
+				"reason":  "mint invoice creation failed",
+				"balance": balance,
+				"streak":  streak,
+			},
+		})
 		logger.Logger.WithError(err).Warn("auto-refill: failed to create mint invoice")
+		if streak >= 3 {
+			r.disableAutoRefill(app, fmt.Sprintf("3 consecutive invoice creation failures: %v", err))
+		}
 		return
 	}
 	defer resp.Body.Close()
@@ -722,8 +780,23 @@ func (r *RoutstrdService) checkAutoRefill(ctx context.Context) {
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 64*1024)).Decode(&invResp); err != nil || invResp.Output.Invoice == "" {
 		r.markAutoRefillAttempted(nowT)
+		r.mu.Lock()
+		r.autoRefillFailStreak++
+		streak := r.autoRefillFailStreak
+		r.mu.Unlock()
 		r.recordAutoRefill(nowT, balance, 0, time.Time{}, "mint invoice response invalid")
+		r.svc.eventPublisher.Publish(&events.Event{
+			Event: "routstrd_autorefill_failed",
+			Properties: map[string]interface{}{
+				"reason":  "mint invoice response invalid",
+				"balance": balance,
+				"streak":  streak,
+			},
+		})
 		logger.Logger.WithError(err).Warn("auto-refill: mint invoice response invalid")
+		if streak >= 3 {
+			r.disableAutoRefill(app, "3 consecutive mint invoice failures")
+		}
 		return
 	}
 
@@ -733,12 +806,27 @@ func (r *RoutstrdService) checkAutoRefill(ctx context.Context) {
 	payReq, decodeErr := decodepay.Decodepay(invResp.Output.Invoice)
 	if decodeErr != nil || validateRefillInvoiceAmount(payReq.MSatoshi, cfg.Amount*1000) != nil {
 		r.markAutoRefillAttempted(nowT)
+		r.mu.Lock()
+		r.autoRefillFailStreak++
+		streak := r.autoRefillFailStreak
+		r.mu.Unlock()
 		r.recordAutoRefill(nowT, balance, 0, time.Time{}, "mint invoice amount mismatch")
+		r.svc.eventPublisher.Publish(&events.Event{
+			Event: "routstrd_autorefill_failed",
+			Properties: map[string]interface{}{
+				"reason":  "invoice amount mismatch",
+				"balance": balance,
+				"streak":  streak,
+			},
+		})
 		logger.Logger.WithFields(map[string]interface{}{
 			"expected_msat": cfg.Amount * 1000,
 			"actual_msat":   payReq.MSatoshi,
 			"decode_error":  decodeErr,
 		}).Warn("auto-refill: mint invoice amount does not match requested amount")
+		if streak >= 3 {
+			r.disableAutoRefill(app, "3 consecutive invoice amount mismatches")
+		}
 		return
 	}
 
@@ -747,17 +835,43 @@ func (r *RoutstrdService) checkAutoRefill(ctx context.Context) {
 	lnClient := r.svc.GetLNClient()
 	if lnClient == nil {
 		r.markAutoRefillAttempted(nowT)
+		r.mu.Lock()
+		r.autoRefillFailStreak++
+		streak := r.autoRefillFailStreak
+		r.mu.Unlock()
 		r.recordAutoRefill(nowT, balance, 0, time.Time{}, "LN client not started")
 		logger.Logger.Warn("auto-refill: LN client not started")
+		if streak >= 3 {
+			r.disableAutoRefill(app, "LN client not started — Hub may be locked")
+		}
 		return
 	}
 	if _, err := r.svc.GetTransactionsService().SendPaymentSync(invResp.Output.Invoice, nil, nil, lnClient, &appID, nil); err != nil {
 		r.markAutoRefillAttempted(nowT)
+		r.mu.Lock()
+		r.autoRefillFailStreak++
+		streak := r.autoRefillFailStreak
+		r.mu.Unlock()
 		r.recordAutoRefill(nowT, balance, 0, time.Time{}, fmt.Sprintf("payment failed: %v", err))
+		r.svc.eventPublisher.Publish(&events.Event{
+			Event: "routstrd_autorefill_failed",
+			Properties: map[string]interface{}{
+				"reason":  "payment failed",
+				"balance": balance,
+				"streak":  streak,
+			},
+		})
 		logger.Logger.WithError(err).Warn("auto-refill: payment failed (Routstr wallet may be low)")
+		if streak >= 3 {
+			r.disableAutoRefill(app, fmt.Sprintf("3 consecutive payment failures: %v", err))
+		}
 		return
 	}
 	r.markAutoRefillAttempted(nowT)
+	// Reset streak on successful refill cycle
+	r.mu.Lock()
+	r.autoRefillFailStreak = 0
+	r.mu.Unlock()
 	r.recordAutoRefill(nowT, balance, cfg.Amount, nowT, "")
 	logger.Logger.Infof("auto-refill: payment initiated for %d sats", cfg.Amount)
 }
@@ -1050,4 +1164,33 @@ func (r *RoutstrdService) getCashuWalletBalance() (int64, error) {
 		}
 	}
 	return total, nil
+}
+
+// disableAutoRefill disables auto-refill for the given app after a circuit
+// breaker trip. It writes `enabled: false` to the app metadata, publishes
+// an event so the UI can alert the user, and resets the failure streak.
+func (r *RoutstrdService) disableAutoRefill(app *db.App, reason string) {
+	if app == nil {
+		return
+	}
+	cfg := readAutoRefillConfig(app)
+	if cfg == nil {
+		return
+	}
+	cfg.Enabled = false
+	if err := r.writeAutoRefillConfig(app, cfg); err != nil {
+		logger.Logger.WithError(err).Warn("auto-refill: failed to disable after circuit breaker trip")
+		return
+	}
+	r.mu.Lock()
+	r.autoRefillFailStreak = 0
+	r.mu.Unlock()
+	logger.Logger.WithField("app_id", app.ID).Warnf("auto-refill: circuit breaker tripped — disabled. Reason: %s", reason)
+	r.svc.eventPublisher.Publish(&events.Event{
+		Event: "routstrd_autorefill_disabled",
+		Properties: map[string]interface{}{
+			"reason": reason,
+			"appId":  app.ID,
+		},
+	})
 }

@@ -68,7 +68,7 @@ func NewService(ctx context.Context) (*service, error) {
 		logger.Logger.WithField("workdir", appConfig.Workdir).Info("No workdir specified, using default")
 	}
 	// make sure workdir exists
-	os.MkdirAll(appConfig.Workdir, os.ModePerm)
+	os.MkdirAll(appConfig.Workdir, 0700)
 
 	if appConfig.LogToFile {
 		err = logger.AddFileLogger(appConfig.Workdir)
