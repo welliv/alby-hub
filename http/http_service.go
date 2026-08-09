@@ -759,6 +759,7 @@ func (httpSvc *HttpService) makeInvoiceHandler(c echo.Context) error {
 	}
 
 	invoice, err := httpSvc.api.CreateInvoice(c.Request().Context(), amountMsat, makeInvoiceRequest.Description, makeInvoiceRequest.AppId)
+	invoice, err := httpSvc.api.CreateInvoice(c.Request().Context(), amountMsat, makeInvoiceRequest.Description, makeInvoiceRequest.ToAppID)
 
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, ErrorResponse{
@@ -836,7 +837,14 @@ func (httpSvc *HttpService) listTransactionsHandler(c echo.Context) error {
 		}
 	}
 
-	transactions, err := httpSvc.api.ListTransactions(ctx, appId, limit, offset)
+	filters, err := api.ParseListTransactionsFilters(c.QueryParams())
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Message: err.Error(),
+		})
+	}
+
+	transactions, err := httpSvc.api.ListTransactions(ctx, appId, limit, offset, filters)
 
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, ErrorResponse{

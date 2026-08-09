@@ -44,10 +44,11 @@ type API interface {
 	SignMessage(ctx context.Context, message string) (*SignMessageResponse, error)
 	RedeemOnchainFunds(ctx context.Context, toAddress string, amountSat uint64, feeRate *uint64, sendAll bool) (*RedeemOnchainFundsResponse, error)
 	GetBalances(ctx context.Context) (*BalancesResponse, error)
-	ListTransactions(ctx context.Context, appId *uint, limit uint64, offset uint64) (*ListTransactionsResponse, error)
+	ListTransactions(ctx context.Context, appId *uint, limit uint64, offset uint64, filters ListTransactionsFilters) (*ListTransactionsResponse, error)
 	ListOnchainTransactions(ctx context.Context) ([]OnchainTransaction, error)
 	SendPayment(ctx context.Context, invoice string, amountMsat *uint64, metadata map[string]interface{}, fromAppId *uint) (*SendPaymentResponse, error)
 	CreateInvoice(ctx context.Context, amountMsat uint64, description string, appId *uint) (*MakeInvoiceResponse, error)
+	CreateInvoice(ctx context.Context, amountMsat uint64, description string, toAppId *uint) (*MakeInvoiceResponse, error)
 	LookupInvoice(ctx context.Context, paymentHash string) (*LookupInvoiceResponse, error)
 	SetTransactionUserLabels(ctx context.Context, id uint, labels map[string]string) error
 	RequestMempoolApi(ctx context.Context, endpoint string) (interface{}, error)
@@ -501,6 +502,13 @@ type SetTransactionUserLabelsRequest struct {
 	Labels map[string]string `json:"labels"`
 }
 
+type ListTransactionsFilters struct {
+	Type          *string
+	MinAmountMsat *uint64
+	HideFailed    bool
+	SearchTerm    string
+}
+
 type ListTransactionsResponse struct {
 	TotalCount   uint64        `json:"totalCount"`
 	Transactions []Transaction `json:"transactions"`
@@ -593,6 +601,7 @@ type MakeInvoiceRequest struct {
 	// AppId scopes the invoice to an app: when paid, sats are credited
 	// directly to that app's (isolated) wallet instead of the main wallet.
 	AppId *uint `json:"appId"`
+	ToAppID     *uint   `json:"toAppId"`
 }
 
 type ResetRouterRequest struct {
