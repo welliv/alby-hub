@@ -301,70 +301,72 @@ export function Routstr() {
     }
   };
 
-  const handleDone = async () => {
-    // Save API key to app metadata before navigating
-    if (appId && createdApiKey) {
-      try {
-        // Prefer pubkey from createApp; fall back to v2 apps API
-        let pubkey = appPubkey;
-        if (!pubkey) {
-          const appResult = await request<{ appPubkey: string }>(
-            `/api/v2/apps/${appId}`
-          );
-          pubkey = appResult?.appPubkey || null;
-        }
+  const saveKeyMetadata = async () => {
+    if (!appId || !createdApiKey) {
+      return;
+    }
+    try {
+      let pubkey = appPubkey;
+      if (!pubkey) {
+        const appResult = await request<{ appPubkey: string }>(
+          `/api/v2/apps/${appId}`
+        );
+        pubkey = appResult?.appPubkey || null;
+      }
 
-        // Live wallet balance (key string holds no sats)
-        let balance = fundedAmount;
+      let balance = fundedAmount;
+      try {
+        const bal = await getRoutstrdKeyBalances();
+        if (typeof bal?.total === "number") {
+          balance = bal.total;
+        }
+      } catch {
+        /* keep fundedAmount */
+      }
+
+      if (pubkey) {
+        let existingMeta: Record<string, unknown> = {
+          app_store_app_id: "routstr",
+        };
         try {
-          const bal = await getRoutstrdKeyBalances();
-          if (typeof bal?.total === "number") {
-            balance = bal.total;
+          const existing = await request<{
+            metadata?: Record<string, unknown>;
+          }>(`/api/v2/apps/${appId}`);
+          if (existing?.metadata && typeof existing.metadata === "object") {
+            existingMeta = { ...existing.metadata };
           }
         } catch {
-          /* keep fundedAmount */
+          /* use defaults */
         }
 
-        if (pubkey) {
-          // Merge with existing metadata so we don't wipe other fields
-          let existingMeta: Record<string, unknown> = {
-            app_store_app_id: "routstr",
-          };
-          try {
-            const existing = await request<{
-              metadata?: Record<string, unknown>;
-            }>(`/api/v2/apps/${appId}`);
-            if (existing?.metadata && typeof existing.metadata === "object") {
-              existingMeta = { ...existing.metadata };
-            }
-          } catch {
-            /* use defaults */
-          }
-
-          const routstrMeta: Record<string, unknown> = {
-            apiKey: createdApiKey,
-            clientId: createdClientId || `routstr-app-${appId}`,
-            balance,
-          };
-          await request(`/api/apps/${pubkey}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              metadata: {
-                ...existingMeta,
-                app_store_app_id: "routstr",
-                routstr: routstrMeta,
-              },
-            }),
-          });
-        } else {
-          console.error("No app pubkey — cannot save Routstr metadata");
-          toast.error("Could not save API key to connection metadata");
-        }
-      } catch (e) {
-        console.error("Failed to save API key metadata", e);
-        toast.error("Failed to save API key details");
+        const routstrMeta: Record<string, unknown> = {
+          apiKey: createdApiKey,
+          clientId: createdClientId || `routstr-app-${appId}`,
+          balance,
+        };
+        await request(`/api/apps/${pubkey}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            metadata: {
+              ...existingMeta,
+              app_store_app_id: "routstr",
+              routstr: routstrMeta,
+            },
+          }),
+        });
       }
+    } catch (e) {
+      console.error("Failed to save API key metadata", e);
+      throw e;
+    }
+  };
+
+  const handleDone = async () => {
+    try {
+      await saveKeyMetadata();
+    } catch {
+      toast.error("Could not save API key to connection metadata");
     }
     if (appId) {
       navigate(`/apps/${appId}`);
@@ -385,6 +387,16 @@ export function Routstr() {
       await fundFromHub(amount, appId!);
       setFundedAmount(amount);
       toast.success(`Deposited ${amount} sats`);
+
+      // Persist API key metadata immediately — don't wait for Done click.
+      if (appId && createdApiKey) {
+        try {
+          await saveKeyMetadata();
+        } catch {
+          // Metadata save is best-effort; key exists in daemon regardless.
+        }
+      }
+
       setFundKeyLoading(false);
       setStep("done");
     } catch (error) {

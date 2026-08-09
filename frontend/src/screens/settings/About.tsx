@@ -122,6 +122,15 @@ export function About() {
             </p>
           ))}
         </div>
+        <div className="grid gap-2">
+          <p className="font-medium text-sm">Routstr AI Gateway</p>
+          <div className="flex items-center gap-2 text-muted-foreground text-sm">
+            <Badge variant={info.routstrdHealthy ? "positive" : "destructive"}>
+              {info.routstrdHealthy ? "running" : "offline"}
+            </Badge>
+            {info.routstrdVersion && <span>v{info.routstrdVersion}</span>}
+          </div>
+        </div>
         {info.albyAccountConnected && albyMe && (
           <div className="grid gap-2">
             <p className="font-medium text-sm">Connected Alby Account</p>

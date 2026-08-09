@@ -46,6 +46,8 @@ export function CreateKeyDialog({
   const [amount, setAmount] = useState("5000");
   const [isProcessing, setIsProcessing] = useState(false);
   const [createdKey, setCreatedKey] = useState("");
+  const [fundProgress, setFundProgress] = useState("");
+  const [fundError, setFundError] = useState("");
 
   const loadModels = useCallback(async (refresh = false) => {
     setModelsLoading(true);
@@ -88,7 +90,9 @@ export function CreateKeyDialog({
       // 2. Fund via Hub's LN from this app's wallet
       if (Number(amount) > 0) {
         setStep("paying");
-        await fundFromHub(Number(amount), connectionAppId);
+        setFundProgress("");
+        setFundError("");
+        await fundFromHub(Number(amount), connectionAppId, setFundProgress);
       }
 
       setCreatedKey(apiKey);
@@ -183,11 +187,21 @@ export function CreateKeyDialog({
             <DialogHeader>
               <DialogTitle>Funding wallet…</DialogTitle>
               <DialogDescription>
-                Depositing {amount} sats and generating your API key.
+                {fundProgress ||
+                  `Depositing ${amount} sats into the Routstr wallet.`}
               </DialogDescription>
             </DialogHeader>
-            <div className="py-8 text-center text-sm text-muted-foreground">
-              Please wait…
+            <div className="py-8 text-center space-y-3">
+              <div className="flex justify-center">
+                <span className="h-6 w-6 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+              </div>
+              {fundError ? (
+                <p className="text-sm text-destructive">{fundError}</p>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  {fundProgress || "Connecting to Cashu mint…"}
+                </p>
+              )}
             </div>
           </>
         )}

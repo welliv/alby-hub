@@ -59,22 +59,39 @@ export default function RoutstrApiKeys() {
         pageTitle="Routstr API Keys"
         title="Routstr API Keys"
         description={
-          <>
-            Universal API keys for Routstr across all connections. Each key
-            works with all models — choose the model in your AI client. Keys are
-            included in your{" "}
-            <button
-              type="button"
-              onClick={() => navigate("/settings/backup")}
-              className="text-foreground underline underline-offset-2 hover:no-underline"
-            >
-              Hub backup
-            </button>
-            . Endpoints:{" "}
-            <code className="text-xs">http://localhost:8008/v1</code> (same
-            device) or <code className="text-xs">/routstr/v1</code> on this Hub
-            (remote).
-          </>
+          <div className="space-y-3 text-sm text-muted-foreground">
+            <p>
+              One key unlocks every model on the Routstr network. Pick any model
+              in your AI client and the router finds the cheapest provider
+              automatically. Pay per request in sats, no subscriptions.
+            </p>
+            <p>
+              Keys are saved in your{" "}
+              <button
+                type="button"
+                onClick={() => navigate("/settings/backup")}
+                className="text-foreground underline underline-offset-2 hover:no-underline"
+              >
+                Hub backup
+              </button>{" "}
+              and restored when you recover.
+            </p>
+            <div className="flex flex-col gap-1">
+              <p className="font-medium text-foreground">
+                Where to point your client
+              </p>
+              <p>
+                Same device:{" "}
+                <code className="text-xs">http://localhost:8008/v1</code>
+              </p>
+              <p>
+                Any device:{" "}
+                <code className="text-xs">
+                  http://{window.location.hostname}:8080/routstr/v1
+                </code>
+              </p>
+            </div>
+          </div>
         }
       />
 
@@ -124,7 +141,7 @@ export default function RoutstrApiKeys() {
                     <div className="flex items-center gap-2">
                       <KeyIcon className="h-4 w-4 text-muted-foreground" />
                       <CardTitle className="text-sm font-medium">
-                        {meta.modelId || "Unknown Model"}
+                        {meta.modelId || app.name}
                       </CardTitle>
                     </div>
                     <Badge

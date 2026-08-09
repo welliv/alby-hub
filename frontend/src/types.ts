@@ -185,6 +185,9 @@ export interface InfoResponse {
   jitChannelsEnabled: boolean;
   hideUpdateBanner: boolean;
   supportsBolt12: boolean;
+  routstrdHealthy: boolean;
+  cocodHealthy: boolean;
+  routstrdVersion: string;
 }
 
 export type BitcoinDisplayFormat = "sats" | "bip177";

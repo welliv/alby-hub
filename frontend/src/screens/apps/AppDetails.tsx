@@ -106,6 +106,9 @@ function AppInternal({ app, refetchApp, capabilities }: AppInternalProps) {
     React.useState(false);
   const [showDisconnectAppDialog, setShowDisconnectAppDialog] =
     React.useState(false);
+  // Incremented after actions that create transactions (top-up, refund, auto-refill)
+  // to force AppUsage to re-fetch the transaction list.
+  const [transactionRefreshKey, setTransactionRefreshKey] = React.useState(0);
 
   const { data: albyMe } = useAlbyMe();
 
@@ -399,7 +402,7 @@ function AppInternal({ app, refetchApp, capabilities }: AppInternalProps) {
                   <AppLinksCard appStoreApp={appStoreApp} />
                 </div>
               )}
-              <AppUsage app={app} />
+              <AppUsage app={app} refreshKey={transactionRefreshKey} />
             </>
           )}
           {isEditingPermissions ? (
@@ -472,7 +475,13 @@ function AppInternal({ app, refetchApp, capabilities }: AppInternalProps) {
               </CardContent>
             </Card>
           )}
-          <RoutstrApiKeySection app={app} onMetadataUpdate={refetchApp} />
+          <RoutstrApiKeySection
+            app={app}
+            onMetadataUpdate={() => {
+              refetchApp();
+              setTransactionRefreshKey((k) => k + 1);
+            }}
+          />
           {!isEditingPermissions && (
             <>
               {showConnectionDetails && (

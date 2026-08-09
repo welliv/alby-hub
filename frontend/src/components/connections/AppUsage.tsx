@@ -30,17 +30,32 @@ import { copyToClipboard } from "src/lib/clipboard";
 import { cn, getBudgetRenewalLabel } from "src/lib/utils";
 import { App, Transaction } from "src/types";
 
-export function AppUsage({ app }: { app: App }) {
+export function AppUsage({
+  app,
+  refreshKey = 0,
+}: {
+  app: App;
+  refreshKey?: number;
+}) {
   const [page, setPage] = React.useState(1);
-  const { data: transactionsResponse } = useTransactions(
-    app.id,
-    false,
-    100,
-    page
-  );
+  const { data: transactionsResponse, mutate: mutateTransactions } =
+    useTransactions(app.id, false, 100, page);
   const [allTransactions, setAllTransactions] = React.useState<Transaction[]>(
     []
   );
+  // Reset pagination and force re-fetch when refreshKey or app balance changes.
+  // IsolatedAppTopupDialog calls reloadApp() which updates app data, but AppUsage
+  // fetches transactions independently — we must react to balance changes so
+  // new transactions appear without a manual page refresh.
+  const lastBalanceRef = React.useRef(app.balanceMsat);
+  React.useEffect(() => {
+    if (refreshKey > 0 || app.balanceMsat !== lastBalanceRef.current) {
+      lastBalanceRef.current = app.balanceMsat;
+      setAllTransactions([]);
+      setPage(1);
+      mutateTransactions();
+    }
+  }, [refreshKey, app.balanceMsat, mutateTransactions]);
   React.useEffect(() => {
     if (transactionsResponse?.transactions.length) {
       setAllTransactions((current) =>
