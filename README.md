@@ -28,7 +28,4 @@ go build -o hub cmd/http/main.go
 In the Hub: AI & Agents → Routstr → Connect → follow the wizard. It creates an isolated app wallet, mints your API key, and funds it with Cashu ecash.
 
 ## Video walkthrough
-
-Repo: [welliv/alby-hub/tree/routstr](https://github.com/welliv/alby-hub/tree/routstr)
-
 Demo video: [watch here](https://blossom.primal.net/4355a71eee3d7b4e3d05ed0e48eb123d504df241c944b12ef795805e34f5c8ea.mp4)
