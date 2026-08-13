@@ -1,28 +1,104 @@
-# Greenlight — hosted non-custodial Lightning for Alby Hub
+# Greenlight backend for Alby Hub
 
-This branch adds the **Greenlight** backend: a Core Lightning node running on Blockstream's cloud, with a VLS signer on your Alby Hub. Blockstream hosts the node — your hub holds the keys.
+A Core Lightning node running on Blockstream's cloud, with the keys and signer on your Alby Hub.
 
-## Why it matters
+Blockstream runs the node.
+Your Hub holds the keys.
 
-Running your own Lightning node is ops-heavy: disk management, uptime, manual channel opens. Custodial backends give up your keys. Greenlight is the middle ground — nobody can spend your sats, but you don't have to run a server.
+## Why this exists
 
-The signer runs as a child process on your hub. When Blockstream's node needs a signature, it asks your signer. Your seed IS your node identity — if Blockstream disappears tomorrow, the same seed boots a standalone CLN node. No vendor lock-in.
+Running your own Lightning node is operationally heavy: disk, uptime, watchtowers, updates.
+Custodial services take your keys.
 
-## What this branch adds
+Greenlight sits in the middle:
 
-- **Full LNClient backend** — 30 of 35 methods via CLN gRPC: payments, invoices, keysend, offers, channel management
-- **Signer supervision** — spawns and monitors the VLS signer, automatic restart on failure
-- **Health watchdog** — periodic Getinfo checks, degraded boot so the hub stays usable even if the node is offline
-- **Provisioning** — registration, credential extraction, node domain derivation, all from a 12-word phrase
-- **Channels** — inbound from Blockstream's LSP, outbound via standard ConnectPeer/FundChannel
-- **Frontend** — Greenlight as a setup option: mnemonic entry, cert upload, channel status
+- **Keys stay local** (like LDK)
+- **Node process runs in the cloud** (Blockstream)
+- **Channels are real Core Lightning channels** (unlike Bark)
 
-## Quick start
+You get real Lightning self-custody without becoming a node operator.
+
+## How it fits with existing backends
+
+| Backend | Keys | Node process | Channels | Operational burden |
+|---|---|---|---|---|
+| LDK (default) | Local | Inside Hub | Real | Medium |
+| Remote CLN/LND | External | Your own server | Real | High |
+| Bark | Local | None (Ark) | Abstracted | Very low |
+| **Greenlight** | **Local** | **Blockstream** | **Real** | **Low** |
+
+Greenlight is a gentle extension of the existing CLN path.
+It is still Core Lightning. The difference is that Blockstream runs the process and your Hub only runs the signer.
+
+## User flow
+
+Greenlight is an **advanced** option only. Get Started stays stock LDK.
+
+1. Advanced setup
+2. Create wallet with custom node
+3. Create unlock password
+4. Choose **Greenlight**
+5. Generate or import a 12-word recovery phrase
+
+After that the experience is normal Alby Hub:
+
+- Unlock: node becomes ready
+- Receive, send, NWC, sub-wallets, lightning address all work
+- Lock: signer stops and seed material is removed from disk
+- On a new device, the same 12 words restore the identical node
+
+The user never runs `glcli` or manages certificates in the normal path.
+
+## Core design rules
+
+- One 12-word mnemonic only. It is both the Greenlight seed and the Hub recovery phrase.
+- Mnemonic is encrypted at rest with the unlock password.
+- `hsm_secret` exists only while unlocked.
+- Hub starts and stops the supervised signer.
+- `isReady` requires both the hosted node and the local signer to be healthy.
+- Recover from the phrase alone restores the same node ID and channels.
+
+## What is implemented
+
+- Product-path ownership of keys and signer
+- Supervised signer lifecycle (start on unlock, stop and shred on lock)
+- Recover-from-phrase
+- Invoices, payments API, NWC surface
+- `LspInvoice` JIT path when inbound is short and an LSP peer is present
+- Honest status reporting (signer down → not ready)
+- Real channel management (hybrid: easy capacity plus full manual control)
+
+## Current status (testnet)
+
+Proven:
+
+- Unlock → `isReady`
+- Lock / unlock cycle
+- Recover same node from phrase
+- Invoices + NWC
+- Live `LspInvoice` fee path
+- Signer-down correctly reports not ready
+
+Still open:
+
+- Settled third-party receive + send (blocked by public testnet liquidity)
+
+## Relationship to the existing CLN backend
+
+This is not a replacement for remote CLN.
+It is the same Core Lightning, with the operational burden moved to Blockstream while the Hub keeps full control of the keys and recovery phrase.
+
+If Blockstream disappeared tomorrow, the same seed can boot a standalone CLN node. There is no vendor lock-in on the critical path.
+
+## Development
+
+Branch: `feat/greenlight-backend`
 
 ```sh
 cd frontend && yarn install && yarn build:http
-go build -o hub cmd/http/main.go
-GREENLIGHT_ENABLED=true ./hub
+cd .. && go build -o hub cmd/http/main.go
+./hub
 ```
 
-Choose Greenlight at setup, provide your Nobody cert, enter your 12-word phrase.
+Do not set `LN_BACKEND_TYPE`. Get Started stays LDK.
+Greenlight appears under Advanced setup → Create wallet with custom node.
