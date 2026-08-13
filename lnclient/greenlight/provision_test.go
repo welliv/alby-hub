@@ -79,3 +79,51 @@ func TestMnemonicToSeed32_MatchesGlcli(t *testing.T) {
 		t.Fatal("seed derivation is not deterministic")
 	}
 }
+
+func TestShredSeedFile_OverwritesAndRemoves(t *testing.T) {
+	dir := t.TempDir()
+	seed := make([]byte, 32)
+	for i := range seed {
+		seed[i] = byte(i + 1)
+	}
+	if err := WriteSeedFile(dir, seed); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	path := filepath.Join(dir, seedFileName)
+	if err := ShredSeedFile(dir); err != nil {
+		t.Fatalf("shred: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("hsm_secret still present after shred")
+	}
+}
+
+func TestShredSeedFile_MissingIsOK(t *testing.T) {
+	if err := ShredSeedFile(t.TempDir()); err != nil {
+		t.Fatalf("shred missing: %v", err)
+	}
+}
+
+func TestEnsureSeedFile_RewritesAfterShred(t *testing.T) {
+	dir := t.TempDir()
+	seed := make([]byte, 32)
+	for i := range seed {
+		seed[i] = 0xab
+	}
+	if err := ensureSeedFile(dir, seed); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := ShredSeedFile(dir); err != nil {
+		t.Fatalf("shred: %v", err)
+	}
+	if err := ensureSeedFile(dir, seed); err != nil {
+		t.Fatalf("rewrite after shred: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, seedFileName))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != string(seed) {
+		t.Fatal("rewritten hsm_secret mismatch")
+	}
+}

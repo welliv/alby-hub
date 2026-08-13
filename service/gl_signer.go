@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/getAlby/hub/events"
+	"github.com/getAlby/hub/lnclient/greenlight"
 	"github.com/getAlby/hub/logger"
 	"github.com/sirupsen/logrus"
 )
@@ -70,8 +71,10 @@ func (s *GreenlightSignerService) Start(ctx context.Context, dataDir, network, g
 
 func (s *GreenlightSignerService) Stop() {
 	s.mu.Lock()
+	dataDir := s.dataDir
 	if !s.running {
 		s.mu.Unlock()
+		s.shredSeed(dataDir)
 		return
 	}
 	s.running = false
@@ -83,13 +86,21 @@ func (s *GreenlightSignerService) Stop() {
 	}
 	s.killSigner()
 	s.wg.Wait()
+	s.shredSeed(dataDir)
 	logger.Logger.Info("Greenlight signer service stopped")
 }
 
+func (s *GreenlightSignerService) shredSeed(dataDir string) {
+	if dataDir == "" {
+		return
+	}
+	if err := greenlight.ShredSeedFile(dataDir); err != nil {
+		logger.Logger.WithError(err).Warn("failed to shred greenlight hsm_secret")
+	}
+}
+
 func (s *GreenlightSignerService) IsRunning() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.running
+	return s.processAlive()
 }
 
 func (s *GreenlightSignerService) LastError() string {

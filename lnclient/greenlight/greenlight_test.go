@@ -45,6 +45,7 @@ type mockNode struct {
 	nextPayIndex uint64
 	keysendCh    chan []byte // raw IncomingPayment payloads pushed by tests
 	getinfoErr   error       // when set, Getinfo fails (simulates a wedged node)
+	receivable   *uint64     // when set, overrides mock inbound for JIT tests
 }
 
 func newMockNode() *mockNode {
@@ -248,6 +249,9 @@ func (m *mockNode) ListPeerChannels(ctx context.Context, req *clngrpc.Listpeerch
 	total := uint64(200000)
 	spendable := uint64(145000)
 	receivable := uint64(49000000)
+	if m.receivable != nil {
+		receivable = *m.receivable
+	}
 	opener := clngrpc.ChannelSide_LOCAL
 	private := false
 	connected := true

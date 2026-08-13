@@ -154,6 +154,8 @@ func (rawCodec) Marshal(v interface{}) ([]byte, error) {
 		return nil, nil
 	case *incomingPaymentMessage:
 		return nil, errors.New("incomingPaymentMessage is receive-only")
+	case *lspInvoiceResponse:
+		return nil, errors.New("lspInvoiceResponse is receive-only")
 	default:
 		if pm, ok := v.(proto.Message); ok {
 			return proto.Marshal(pm)
@@ -165,6 +167,8 @@ func (rawCodec) Marshal(v interface{}) ([]byte, error) {
 func (rawCodec) Unmarshal(data []byte, v interface{}) error {
 	switch m := v.(type) {
 	case *incomingPaymentMessage:
+		return m.decode(data)
+	case *lspInvoiceResponse:
 		return m.decode(data)
 	case *emptyMessage:
 		return nil

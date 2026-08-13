@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -29,6 +30,7 @@ import (
 	"github.com/getAlby/hub/db/queries"
 	"github.com/getAlby/hub/events"
 	"github.com/getAlby/hub/lnclient"
+	"github.com/getAlby/hub/lnclient/greenlight"
 	"github.com/getAlby/hub/logger"
 	permissions "github.com/getAlby/hub/nip47/permissions"
 	"github.com/getAlby/hub/service"
@@ -1767,6 +1769,19 @@ func (api *api) Setup(ctx context.Context, setupRequest *SetupRequest) error {
 		if err != nil {
 			logger.Logger.WithError(err).Error("Failed to save encrypted mnemonic")
 			return err
+		}
+		// Product path: materialize hsm_secret into the hub data dir at setup
+		// so unlock can start the supervised signer without guessing a path.
+		if setupRequest.LNBackendType == config.GreenlightBackendType {
+			seed, seedErr := greenlight.MnemonicToSeed32(setupRequest.Mnemonic)
+			if seedErr != nil {
+				return seedErr
+			}
+			glDir := filepath.Join(api.cfg.GetEnv().Workdir, "greenlight")
+			if err = greenlight.WriteSeedFile(glDir, seed); err != nil {
+				logger.Logger.WithError(err).Error("Failed to write greenlight hsm_secret")
+				return err
+			}
 		}
 	}
 	if setupRequest.LNDAddress != "" {

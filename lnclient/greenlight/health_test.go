@@ -85,6 +85,9 @@ func TestGetNodeStatus_ServesWatchdogCache(t *testing.T) {
 	if !ok || !health.Healthy {
 		t.Fatalf("expected healthy internal status, got %#v", status.InternalNodeStatus)
 	}
+	if !health.NodeConnected {
+		t.Fatal("expected node_connected=true for a healthy node")
+	}
 
 	// node goes down: the API must keep answering from the cache
 	node.mu.Lock()
@@ -198,6 +201,9 @@ func TestGetNodeStatus_SurfaceSignerState(t *testing.T) {
 	}
 	if health.Signer.LastError != "glcli not found" {
 		t.Fatalf("expected signer error, got %q", health.Signer.LastError)
+	}
+	if status.IsReady {
+		t.Fatal("expected IsReady=false when signer is down")
 	}
 
 	// nil provider (external-signer mode): signer field must be empty/omitted

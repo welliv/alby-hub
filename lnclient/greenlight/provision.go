@@ -82,6 +82,36 @@ func ensureSeedFile(dataDir string, seed []byte) error {
 	return WriteSeedFile(dataDir, seed)
 }
 
+// ShredSeedFile overwrites hsm_secret with zeros then removes it.
+// Missing file is success: lock must be idempotent.
+func ShredSeedFile(dataDir string) error {
+	seedPath := filepath.Join(dataDir, seedFileName)
+	st, err := os.Stat(seedPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("stat hsm_secret: %w", err)
+	}
+	f, err := os.OpenFile(seedPath, os.O_WRONLY, 0)
+	if err != nil {
+		_ = os.Remove(seedPath)
+		return fmt.Errorf("open hsm_secret for shred: %w", err)
+	}
+	zeros := make([]byte, st.Size())
+	if _, err := f.Write(zeros); err != nil {
+		_ = f.Close()
+		_ = os.Remove(seedPath)
+		return fmt.Errorf("overwrite hsm_secret: %w", err)
+	}
+	_ = f.Sync()
+	_ = f.Close()
+	if err := os.Remove(seedPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove hsm_secret: %w", err)
+	}
+	return nil
+}
+
 // EnsureProvisioned writes seed from mnemonic, registers/recovers via glcli if needed,
 // extracts device PEMs, and returns (deviceCredsDir, nodeURI).
 func EnsureProvisioned(dataDir, network, glcliPath, nobodyCrt, nobodyKey, mnemonic, extractScript string) (credsDir, nodeURI string, err error) {
@@ -145,6 +175,14 @@ func EnsureProvisioned(dataDir, network, glcliPath, nobodyCrt, nobodyKey, mnemon
 		}
 		logger.Logger.Info("Registering greenlight node via glcli")
 		out, regErr := run("-d", dataDir, "-n", network, "scheduler", "register")
+		// glcli can exit 0 while still printing "Failed to register node"
+		// (node already exists). Treat missing credentials.gfs as failure
+		// and fall through to recover — that is the mnemonic reinstall path.
+		if _, statErr := os.Stat(credsBlob); statErr != nil {
+			if regErr == nil {
+				regErr = fmt.Errorf("register left no credentials.gfs: %s", strings.TrimSpace(out))
+			}
+		}
 		if regErr != nil {
 			logger.Logger.WithError(regErr).Warn("register failed, trying recover")
 			out2, recErr := run("-d", dataDir, "-n", network, "scheduler", "recover")

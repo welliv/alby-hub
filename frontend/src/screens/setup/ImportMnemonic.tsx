@@ -1,6 +1,11 @@
 import * as bip39 from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
-import { AlertTriangleIcon, LifeBuoyIcon, ShieldCheckIcon } from "lucide-react";
+import {
+  AlertTriangleIcon,
+  LifeBuoyIcon,
+  ShieldAlertIcon,
+  ShieldCheckIcon,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 
@@ -9,6 +14,8 @@ import MnemonicInputs from "src/components/mnemonic/MnemonicInputs";
 import TwoColumnLayoutHeader from "src/components/TwoColumnLayoutHeader";
 import { Alert, AlertDescription, AlertTitle } from "src/components/ui/alert";
 import { Button } from "src/components/ui/button";
+import { Checkbox } from "src/components/ui/checkbox";
+import { Label } from "src/components/ui/label";
 import useSetupStore from "src/state/SetupStore";
 
 export function ImportMnemonic() {
@@ -87,7 +94,9 @@ export function ImportMnemonic() {
       ) : (
         <Alert variant="warning">
           <AlertTriangleIcon />
-          <AlertTitle>Do not re-use the same key on multiple devices</AlertTitle>
+          <AlertTitle>
+            Do not re-use the same key on multiple devices
+          </AlertTitle>
           <AlertDescription className="inline">
             If you want to transfer your existing Hub to another machine please
             use the <b>Hub backup</b> option from restore.
@@ -137,8 +146,8 @@ export function ImportMnemonic() {
             onCheckedChange={() => setIsBackedUp(!backedUp)}
           />
           <Label htmlFor="confirmedNoChannels" className="ml-2 cursor-pointer">
-            I don't have another Alby Hub to migrate or open channels (funds from
-            channels will be lost!).
+            I don't have another Alby Hub to migrate or open channels (funds
+            from channels will be lost!).
           </Label>
         </div>
       )}

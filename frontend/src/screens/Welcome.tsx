@@ -18,6 +18,8 @@ export function Welcome() {
 
   function navigateToAuthPage(returnTo: string) {
     if (info?.albyAccountConnected) {
+      // in case user goes back after authenticating in setup
+      // we don't want to show the auth screen twice
       navigate(returnTo);
       return;
     }
@@ -27,14 +29,12 @@ export function Welcome() {
     // by default, allow the user to choose whether or not to connect to alby account
     let navigateTo = "/setup/alby";
     if (info?.oauthRedirect) {
+      // if using a custom OAuth client (e.g. Alby Cloud) the user must connect their Alby account
+      // but they are already logged in at getalby.com, so it should be an instant redirect.
       navigateTo = "/alby/auth";
     }
     navigate(navigateTo);
   }
-
-  const startPath = info?.backendType
-    ? `/setup/password?node=${info.backendType.toLowerCase() === "greenlight" ? "greenlight" : "preset"}`
-    : "/setup/password?node=ldk";
 
   return (
     <Container>
@@ -52,24 +52,22 @@ export function Welcome() {
         <div className="grid gap-2">
           <Button
             className="w-full"
-            onClick={() => navigateToAuthPage(startPath)}
+            onClick={() =>
+              navigateToAuthPage(
+                info?.backendType
+                  ? "/setup/password?node=preset" // node already setup through env variables
+                  : "/setup/password?node=ldk"
+              )
+            }
           >
             Get Started
-            {info?.backendType && ` (${info.backendType})`}
-          </Button>
-
-          <Button
-            variant="secondary"
-            className="w-full"
-            onClick={() => navigateToAuthPage("/setup/recover")}
-          >
-            I already have a Hub
+            {info?.backendType && ` (${info?.backendType})`}
           </Button>
 
           {info?.enableAdvancedSetup && (
             <Button
-              variant="ghost"
-              className="w-full text-muted-foreground"
+              variant="secondary"
+              className="w-full"
               onClick={() => navigateToAuthPage("/setup/advanced")}
             >
               Advanced Setup

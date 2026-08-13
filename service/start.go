@@ -527,34 +527,39 @@ func (svc *service) launchGreenlight(ctx context.Context, encryptionKey string) 
 		glNet = "signet"
 	}
 
+	// Product path (mnemonic set): signer lives at $WORK_DIR/greenlight.
+	// Do not honour GREENLIGHT_SIGNER_DATA_DIR / persisted overrides here —
+	// those sent the hub looking for hsm_secret in the wrong place and it
+	// fell through to "external signer" with no local keys.
 	workdir := path.Join(env.Workdir, "greenlight")
+	mnemonic, _ := svc.cfg.Get("Mnemonic", encryptionKey)
+	product := mnemonic != ""
+
 	signerDir := workdir
-	if d, _ := svc.cfg.Get("GreenlightSignerDataDir", encryptionKey); d != "" {
-		signerDir = d
-	} else if env.GreenlightSignerDataDir != "" {
-		signerDir = env.GreenlightSignerDataDir
+	if !product {
+		if d, _ := svc.cfg.Get("GreenlightSignerDataDir", encryptionKey); d != "" {
+			signerDir = d
+		} else if env.GreenlightSignerDataDir != "" {
+			signerDir = env.GreenlightSignerDataDir
+		}
 	}
 
-	mnemonic, _ := svc.cfg.Get("Mnemonic", encryptionKey)
 	credsPath, _ := svc.cfg.Get("GreenlightCredsPath", encryptionKey)
 	nodeURI, _ := svc.cfg.Get("GreenlightNodeURI", encryptionKey)
 	serverName, _ := svc.cfg.Get("GreenlightServerName", encryptionKey)
 	if serverName == "" {
 		serverName = env.GreenlightServerName
 	}
-	if credsPath == "" {
-		credsPath = env.GreenlightCredsPath
-	}
-	if nodeURI == "" {
-		nodeURI = env.GreenlightNodeURI
+	if !product {
+		if credsPath == "" {
+			credsPath = env.GreenlightCredsPath
+		}
+		if nodeURI == "" {
+			nodeURI = env.GreenlightNodeURI
+		}
 	}
 
-	// Preconfigured connect (local gl-testing harness or operator PEMs+URI):
-	// skip Blockstream register even if setup also stored a mnemonic.
-	preconfigured := credsPath != "" && nodeURI != ""
-
-	// Product path: mnemonic present and no usable connect config yet → register/recover.
-	if mnemonic != "" && !preconfigured {
+	if product {
 		svc.startupState = "Provisioning Greenlight"
 		nobodyCrt := env.GreenlightNobodyCrt
 		nobodyKey := env.GreenlightNobodyKey
@@ -568,12 +573,11 @@ func (svc *service) launchGreenlight(ctx context.Context, encryptionKey string) 
 		if _, err := os.Stat(path.Join("lnclient", "greenlight", "extract_creds.py")); err == nil {
 			extractScript = path.Join("lnclient", "greenlight", "extract_creds.py")
 		}
-		// else: pass "" — provision.go writes and uses the embedded copy, so the
-		// hub binary is deployable from any directory.
 		dir, uri, err := greenlight.EnsureProvisioned(
 			signerDir, glNet, env.GreenlightGlcliPath, nobodyCrt, nobodyKey, mnemonic, extractScript,
 		)
 		if err != nil {
+			_ = greenlight.ShredSeedFile(signerDir)
 			return nil, fmt.Errorf("greenlight provision: %w", err)
 		}
 		credsPath = dir
@@ -583,26 +587,44 @@ func (svc *service) launchGreenlight(ctx context.Context, encryptionKey string) 
 		_ = svc.cfg.SetUpdate("GreenlightCredsPath", credsPath, "")
 		_ = svc.cfg.SetUpdate("GreenlightNodeURI", nodeURI, "")
 		_ = svc.cfg.SetUpdate("GreenlightSignerDataDir", signerDir, "")
-	}
 
-	if credsPath == "" || nodeURI == "" {
-		return nil, fmt.Errorf("greenlight requires mnemonic (setup) or GREENLIGHT_CREDS_PATH + GREENLIGHT_NODE_URI")
-	}
-
-	// Start local glcli signer only when this box holds hsm_secret (product path).
-	// Local gl-testing keeps an in-process VLS signer; do not spawn a mismatched glcli.
-	hsmPath := path.Join(signerDir, "hsm_secret")
-	if _, err := os.Stat(hsmPath); err == nil {
 		svc.startupState = "Starting Greenlight signer"
 		if svc.glSigner == nil {
 			svc.glSigner = NewGreenlightSignerService()
 		}
 		if err := svc.glSigner.Start(ctx, signerDir, glNet, env.GreenlightGlcliPath, svc.eventPublisher); err != nil {
+			_ = greenlight.ShredSeedFile(signerDir)
 			return nil, fmt.Errorf("start greenlight signer: %w", err)
 		}
 		time.Sleep(2 * time.Second)
+		if !svc.glSigner.IsRunning() {
+			errMsg := svc.glSigner.LastError()
+			if errMsg == "" {
+				errMsg = "signer process not running"
+			}
+			_ = greenlight.ShredSeedFile(signerDir)
+			svc.glSigner.Stop()
+			return nil, fmt.Errorf("start greenlight signer: %s", errMsg)
+		}
 	} else {
-		logger.Logger.Info("No hsm_secret in greenlight workdir; assuming external signer (e.g. gl-testing)")
+		if credsPath == "" || nodeURI == "" {
+			return nil, fmt.Errorf("greenlight requires mnemonic (setup) or GREENLIGHT_CREDS_PATH + GREENLIGHT_NODE_URI")
+		}
+		// Harness / operator PEMs: spawn a local signer only if this box
+		// already holds hsm_secret. Otherwise the in-process VLS owns keys.
+		hsmPath := path.Join(signerDir, "hsm_secret")
+		if _, err := os.Stat(hsmPath); err == nil {
+			svc.startupState = "Starting Greenlight signer"
+			if svc.glSigner == nil {
+				svc.glSigner = NewGreenlightSignerService()
+			}
+			if err := svc.glSigner.Start(ctx, signerDir, glNet, env.GreenlightGlcliPath, svc.eventPublisher); err != nil {
+				return nil, fmt.Errorf("start greenlight signer: %w", err)
+			}
+			time.Sleep(2 * time.Second)
+		} else {
+			logger.Logger.Info("No hsm_secret in greenlight workdir; assuming external signer (e.g. gl-testing)")
+		}
 	}
 
 	svc.startupState = "Connecting to Greenlight"

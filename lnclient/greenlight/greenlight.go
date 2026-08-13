@@ -373,6 +373,48 @@ func (g *GreenlightService) MakeInvoice(ctx context.Context, amountMsat int64, d
 	}
 	myExpiry := uint64(expiry)
 
+	// LDK equivalent: ReceiveViaJitChannel when the amount exceeds inbound.
+	// Greenlight's gl-plugin already negotiates LSPS2 in LspInvoice; we only
+	// call it when inbound is short. No LSP peer → fall back to Invoice.
+	if amountMsat > 0 && throughNodePubkey == nil {
+		inbound := g.maxReceivableMsat(ctx)
+		if amountMsat > inbound {
+			jit, jitErr := g.lspInvoice(ctx, uint64(amountMsat), description, label)
+			if jitErr == nil {
+				expiresAt := int64(jit.ExpiresAt)
+				logger.Logger.WithFields(logrus.Fields{
+					"opening_fee_msat": jit.OpeningFeeMsat,
+					"inbound_msat":     inbound,
+					"amount_msat":      amountMsat,
+				}).Info("greenlight JIT invoice via LspInvoice")
+				return &lnclient.Transaction{
+					Type:            "incoming",
+					Invoice:         jit.Bolt11,
+					Description:     description,
+					DescriptionHash: descriptionHash,
+					Preimage:        "",
+					PaymentHash:     hex.EncodeToString(jit.PaymentHash),
+					AmountMsat:      amountMsat,
+					FeesPaidMsat:    int64(jit.OpeningFeeMsat),
+					CreatedAt:       time.Now().Unix(),
+					ExpiresAt:       &expiresAt,
+					SettledAt:       nil,
+					Metadata:        lnclient.Metadata{},
+					SettleDeadline:  nil,
+				}, nil
+			}
+			logJitFallback(jitErr, amountMsat, inbound)
+			if g.eventPublisher != nil {
+				g.eventPublisher.Publish(&events.Event{
+					Event: "nwc_incoming_liquidity_required",
+					Properties: map[string]interface{}{
+						"node_type": "GREENLIGHT",
+					},
+				})
+			}
+		}
+	}
+
 	Amount := clngrpc.AmountOrAny{
 		Value: &clngrpc.AmountOrAny_Amount{Amount: &clngrpc.Amount{Msat: uint64(amountMsat)}}}
 	// amount 0 is often used for "any" amount but CLN doesn't support 0 directly
@@ -757,18 +799,23 @@ func (g *GreenlightService) GetNodeStatus(ctx context.Context) (*lnclient.NodeSt
 	info := g.lastInfo
 	g.healthMtx.RUnlock()
 
-	ready := healthy
-	if info != nil && (info.WarningBitcoindSync != nil || info.WarningLightningdSync != nil) {
-		ready = false
-	}
-
 	hs := nodeHealthStatus{
-		Healthy:     healthy,
-		LastCheckAt: lastCheck.Unix(),
-		LastError:   lastErr,
+		Healthy:       healthy,
+		NodeConnected: healthy,
+		LastCheckAt:   lastCheck.Unix(),
+		LastError:     lastErr,
 	}
 	if g.config.SignerStatusProvider != nil {
 		hs.Signer = g.config.SignerStatusProvider()
+	}
+
+	ready := hs.NodeConnected
+	if info != nil && (info.WarningBitcoindSync != nil || info.WarningLightningdSync != nil) {
+		ready = false
+	}
+	// Product path wires a signer provider: ready means node + signer.
+	if g.config.SignerStatusProvider != nil && !hs.Signer.Running {
+		ready = false
 	}
 
 	return &lnclient.NodeStatus{
