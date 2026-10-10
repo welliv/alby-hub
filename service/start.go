@@ -478,9 +478,12 @@ func (svc *service) launchLNBackend(ctx context.Context, encryptionKey string) e
 	// in the LNClient init function
 
 	svc.lnClient = lnClient
-	info, err := lnClient.GetInfo(ctx)
+	// bounded: a remote/frozen node (e.g. Greenlight) must never block startup
+	infoCtx, infoCancel := context.WithTimeout(ctx, 15*time.Second)
+	info, err := lnClient.GetInfo(infoCtx)
+	infoCancel()
 	if err != nil {
-		logger.Logger.WithError(err).Error("Failed to fetch node info")
+		logger.Logger.WithError(err).Error("Failed to fetch node info (continuing degraded)")
 	}
 	if info != nil {
 		svc.eventPublisher.SetGlobalProperty("node_id", info.Pubkey)
