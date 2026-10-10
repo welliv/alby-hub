@@ -916,7 +916,7 @@ func TestSupportedMethodsAndNotifications(t *testing.T) {
 	}
 	// push tier: pump covers incoming payments with persisted index catch-up
 	notifications := svc.GetSupportedNIP47NotificationTypes()
-	if len(notifications) != 1 || notifications[0] != "payment_received" {
+	if len(notifications) != 2 || notifications[0] != "payment_received" || notifications[1] != "payment_sent" {
 		t.Errorf("expected payment_received notification type, got %v", notifications)
 	}
 }

@@ -1482,8 +1482,11 @@ func (g *GreenlightService) GetSupportedNIP47Methods() []string {
 // (transactions_service.go:703) - the pump covers that gap by replaying
 // anything that happened while the hub was down (index-based catch-up).
 func (g *GreenlightService) GetSupportedNIP47NotificationTypes() []string {
+	// payment_sent: the hub emits it on settlement, including payments
+	// settled asynchronously by the reconciler (payments.go)
 	return []string{
 		"payment_received",
+		"payment_sent",
 	}
 }
 
@@ -1492,7 +1495,7 @@ func (g *GreenlightService) GetCustomNodeCommandDefinitions() []lnclient.CustomN
 }
 
 func (g *GreenlightService) ExecuteCustomNodeCommand(ctx context.Context, command *lnclient.CustomNodeCommandRequest) (*lnclient.CustomNodeCommandResponse, error) {
-	return nil, nil
+	return nil, lnclient.ErrUnknownCustomNodeCommand
 }
 
 func (g *GreenlightService) clnInvoiceToTransaction(ctx context.Context, invoice *clngrpc.ListinvoicesInvoices) (*lnclient.Transaction, error) {
