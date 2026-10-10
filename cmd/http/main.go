@@ -2,10 +2,10 @@ package main
 
 import (
 	"context"
-	"fmt"
 	nethttp "net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -56,7 +56,7 @@ func main() {
 	httpSvc.RegisterSharedRoutes(e)
 	//start Echo server
 	go func() {
-		if err := e.Start(fmt.Sprintf(":%v", svc.GetConfig().GetEnv().Port)); err != nil && err != nethttp.ErrServerClosed {
+		if err := e.Start(listenAddr(svc.GetConfig().GetEnv().Port)); err != nil && err != nethttp.ErrServerClosed {
 			logger.Logger.WithError(err).Error("echo server failed to start")
 			cancel()
 		}
@@ -76,4 +76,12 @@ func main() {
 	svc.Shutdown()
 	logger.Logger.Info("Service exited")
 	logger.Logger.Info("Alby Hub needs to stay online to send and receive transactions. Channels may be closed if your hub stays offline for an extended period of time.")
+}
+
+// audit-local: allow PORT=127.0.0.1:8089 to bind loopback only
+func listenAddr(port string) string {
+	if strings.Contains(port, ":") {
+		return port
+	}
+	return ":" + port
 }
