@@ -272,7 +272,7 @@ func (g *GreenlightService) publishPaymentSent(tp *trackedPayment, p *clngrpc.Li
 		Preimage:     hex.EncodeToString(p.Preimage),
 		PaymentHash:  hex.EncodeToString(p.PaymentHash),
 		AmountMsat:   i64(tp.amountMsat),
-		FeesPaidMsat: int64(feeOf(p.AmountSentMsat, p.AmountMsat)),
+		FeesPaidMsat: i64(feeOf(p.AmountSentMsat, p.AmountMsat)),
 		Metadata:     lnclient.Metadata{},
 	}
 	if p.AmountMsat != nil {
