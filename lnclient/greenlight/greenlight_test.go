@@ -50,6 +50,12 @@ type mockNode struct {
 	keysendErr   error
 	pays         []*clngrpc.ListpaysPays
 	xpayCalls    int
+	xpayPreimage []byte // preimage Xpay reports (tests set sha256 = invoice hash)
+
+	// hostile-node hooks (adversarial_test.go)
+	fundsOverride    *clngrpc.ListfundsResponse
+	channelsOverride *clngrpc.ListpeerchannelsResponse
+	getinfoDelay     time.Duration
 }
 
 func newMockNode() *mockNode {
@@ -61,6 +67,16 @@ func newMockNode() *mockNode {
 }
 
 func (m *mockNode) Getinfo(ctx context.Context, req *clngrpc.GetinfoRequest) (*clngrpc.GetinfoResponse, error) {
+	m.mu.Lock()
+	d := m.getinfoDelay
+	m.mu.Unlock()
+	if d > 0 {
+		select {
+		case <-time.After(d):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.getinfoErr != nil {
@@ -102,7 +118,10 @@ func (m *mockNode) Xpay(ctx context.Context, req *clngrpc.XpayRequest) (*clngrpc
 	if xerr != nil {
 		return nil, xerr
 	}
-	preimage := []byte("mock-preimage-0123456789abcdef")
+	preimage := m.xpayPreimage
+	if preimage == nil {
+		preimage = []byte("mock-preimage-0123456789abcdef")
+	}
 	amount := uint64(1000)
 	if req.AmountMsat != nil {
 		amount = req.AmountMsat.Msat
@@ -134,8 +153,11 @@ func (m *mockNode) KeySend(ctx context.Context, req *clngrpc.KeysendRequest) (*c
 	if kerr != nil {
 		return nil, kerr
 	}
+	kpre := []byte("mock-keysend-preimage-1234567890")
+	kh := sha256.Sum256(kpre)
 	return &clngrpc.KeysendResponse{
-		PaymentPreimage: []byte("mock-keysend-preimage-1234567890"),
+		PaymentPreimage: kpre,
+		PaymentHash:     kh[:],
 		AmountMsat:      &clngrpc.Amount{Msat: req.AmountMsat.Msat},
 		AmountSentMsat:  &clngrpc.Amount{Msat: req.AmountMsat.Msat + 5},
 	}, nil
@@ -273,6 +295,9 @@ func lastpayIndexOrZero(req *clngrpc.WaitanyinvoiceRequest) uint64 {
 }
 
 func (m *mockNode) ListPeerChannels(ctx context.Context, req *clngrpc.ListpeerchannelsRequest) (*clngrpc.ListpeerchannelsResponse, error) {
+	if m.channelsOverride != nil {
+		return m.channelsOverride, nil
+	}
 	scid := "800000x1x0"
 	state := clngrpc.ChannelState_ChanneldNormal
 	toUs := uint64(150000)
@@ -318,6 +343,9 @@ func (m *mockNode) ListPeerChannels(ctx context.Context, req *clngrpc.Listpeerch
 }
 
 func (m *mockNode) ListFunds(ctx context.Context, req *clngrpc.ListfundsRequest) (*clngrpc.ListfundsResponse, error) {
+	if m.fundsOverride != nil {
+		return m.fundsOverride, nil
+	}
 	return &clngrpc.ListfundsResponse{
 		Outputs: []*clngrpc.ListfundsOutputs{
 			{
@@ -666,10 +694,13 @@ func TestGetInfo(t *testing.T) {
 }
 
 func TestSendPaymentSync(t *testing.T) {
-	svc, cleanup := newTestService(t, newMockNode())
+	node := newMockNode()
+	node.xpayPreimage = []byte("0123456789abcdef0123456789abcdef")
+	hash := sha256.Sum256(node.xpayPreimage)
+	svc, cleanup := newTestService(t, node)
 	defer cleanup()
 
-	resp, err := svc.SendPaymentSync(makeTestInvoice(t, testInvoiceOpts{amountMsat: 1000}), nil)
+	resp, err := svc.SendPaymentSync(makeTestInvoice(t, testInvoiceOpts{amountMsat: 1000, paymentHash: &hash}), nil)
 	if err != nil {
 		t.Fatalf("SendPaymentSync failed: %v", err)
 	}

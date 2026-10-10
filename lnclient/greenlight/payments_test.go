@@ -159,11 +159,10 @@ func TestPayDefinitiveFailureGlRpcErrorShape(t *testing.T) {
 }
 
 func TestPayErrorButNodeCompleteReconcilesSent(t *testing.T) {
-	var hash [32]byte
-	_, _ = rand.Read(hash[:])
 	node := newMockNode()
 	node.xpayErr = status.Error(codes.Unknown, "Error code 209: odd")
 	pre := []byte("0123456789abcdef0123456789abcdef")
+	hash := sha256.Sum256(pre)
 	node.pays = []*clngrpc.ListpaysPays{{PaymentHash: hash[:], Status: clngrpc.ListpaysPays_COMPLETE, Preimage: pre,
 		AmountMsat: &clngrpc.Amount{Msat: 1000}, AmountSentMsat: &clngrpc.Amount{Msat: 1002}}}
 	svc, cleanup := newTestService(t, node)
@@ -227,7 +226,8 @@ func TestKeysendAmbiguousTrackedByLabel(t *testing.T) {
 	if tp.RequestedPaymentHash != hexOf(sum[:]) {
 		t.Fatal("requested hash must be sha256(preimage)")
 	}
-	real := []byte("real-hash-real-hash-real-hash-32")
+	realSum := sha256.Sum256(pre)
+	real := realSum[:]
 	node.mu.Lock()
 	node.pays = []*clngrpc.ListpaysPays{{PaymentHash: real, Label: &tp.Label, Status: clngrpc.ListpaysPays_COMPLETE, Preimage: pre}}
 	node.mu.Unlock()

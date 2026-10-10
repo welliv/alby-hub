@@ -2,6 +2,8 @@ package greenlight
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -311,6 +313,10 @@ func (g *GreenlightService) reconcileOnce(ctx context.Context, tp *trackedPaymen
 	outcome, p := aggregatePays(pays)
 	switch outcome {
 	case outcomeComplete:
+		if !preimageMatches(p.PaymentHash, p.Preimage) {
+			logger.Logger.WithField("payment_hash", tp.PaymentHash).Error("reconcile: node reported complete with a preimage that does not match the hash; leaving pending")
+			return false
+		}
 		g.publishPaymentSent(tp, p)
 		return true
 	case outcomeFailed:
@@ -440,4 +446,15 @@ func i64(u uint64) int64 {
 		return math.MaxInt64
 	}
 	return int64(u) // #nosec G115 -- bounded above
+}
+
+// preimageMatches verifies proof of payment: sha256(preimage) == hash. The
+// hosted node is operated by a third party; a "complete" claim without a
+// valid preimage must never settle a payment (or consume an app budget).
+func preimageMatches(hash, preimage []byte) bool {
+	if len(hash) != 32 || len(preimage) != 32 {
+		return false
+	}
+	h := sha256.Sum256(preimage)
+	return subtle.ConstantTimeCompare(h[:], hash) == 1
 }

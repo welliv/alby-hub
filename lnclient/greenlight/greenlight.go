@@ -235,6 +235,10 @@ func (g *GreenlightService) SendPaymentSync(payReq string, amount *uint64) (*lnc
 	ctx, cancel := context.WithTimeout(g.ctx, payRPCTimeout)
 	defer cancel()
 	resp, err := g.client.Xpay(ctx, &clngrpc.XpayRequest{Invstring: payReq, AmountMsat: amountMsat, RetryFor: &retryFor})
+	if err == nil && !preimageMatches(inv.PaymentHash[:], resp.PaymentPreimage) {
+		// Success without a valid proof of payment: never mark settled.
+		err = errUnverifiedPreimage
+	}
 	if err == nil {
 		return &lnclient.PayInvoiceResponse{
 			Preimage: hex.EncodeToString(resp.PaymentPreimage),
@@ -334,6 +338,10 @@ func (g *GreenlightService) SendKeysend(amount uint64, destination string, custo
 	}
 	if resp == nil {
 		return nil, fmt.Errorf("%w: empty keysend response", lnclient.ErrPaymentPending)
+	}
+	if !preimageMatches(resp.PaymentHash, resp.PaymentPreimage) {
+		tp := &trackedPayment{PaymentHash: label, Label: label, AmountMsat: amount, Started: time.Now(), RequestedPaymentHash: requestedHash}
+		return nil, g.resolvePayError(errUnverifiedPreimage, tp, "keysend")
 	}
 	// Greenlight (CLN-family) derives its own preimage server-side — the
 	// caller-supplied preimage cannot be honored via the gl-client, so
@@ -1842,3 +1850,7 @@ func validateInvoiceDescription(description string, hashOnly bool) error {
 	}
 	return nil
 }
+
+// errUnverifiedPreimage is deliberately not a definitive failure: the payment
+// is tracked as pending and reconciled (and never settled on a bad preimage).
+var errUnverifiedPreimage = errors.New("node reported payment success with a preimage that does not match the payment hash")
