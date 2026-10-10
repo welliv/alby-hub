@@ -67,7 +67,8 @@ Greenlight node is confirmed lost and cannot be re-scheduled.
 ### 1. Node frozen (hsmd queue wedge) — the critical one
 
 **Cause**: a signing request the VLS signer cannot answer (historically
-`signmessage`, see KNOWN-ISSUES.md and Blockstream/greenlight#739) wedges the
+`signmessage` on older node stacks; Blockstream/greenlight#739, closed:
+signmessage is blocked by design and current gl-plugin rejects it fast) wedges the
 node's hsmd queue. The node stops processing: payments stall, invoices don't
 settle, every RPC hangs.
 

@@ -1343,15 +1343,14 @@ func (g *GreenlightService) GetLogOutput(ctx context.Context, maxLen int) ([]byt
 }
 
 func (g *GreenlightService) SignMessage(ctx context.Context, message string) (string, error) {
-	// NOT SUPPORTED: empirically (regtest harness + live testnet node,
-	// v26.06gl1 with glcli signer) the VLS signer never completes the
-	// hsmd SignMessage request, which wedges lightningd's serial hsmd
-	// queue and freezes ALL signing operations (invoice creation starts
-	// timing out) until the hosted node restarts. The same freeze was
-	// documented for the gl-testing python signer; the production Rust
-	// VLS signer hangs identically. Return a clean error instead of
-	// freezing the node.
-	return "", errors.New("sign message is not supported by the greenlight backend (VLS signer hangs on signmessage, freezing the node's hsmd queue)")
+	// NOT SUPPORTED, by design: signmessage is intentionally blocked by
+	// the Greenlight signer and is not part of the allowed API
+	// (Blockstream/greenlight#739, closed 2026-09-06). Older node stacks
+	// wedged lightningd's serial hsmd queue on this call (observed on
+	// testnet, v26.06gl1); gl-plugin at upstream 15b22cf now rejects it
+	// immediately with Unimplemented (regtest bench, 2026-10-10). Never
+	// forward it: we cannot know which plugin a hosted node runs.
+	return "", errors.New("sign message is not supported by the greenlight backend (the Greenlight signer intentionally does not sign arbitrary messages)")
 }
 
 func (g *GreenlightService) GetStorageDir() (string, error) {
@@ -1493,9 +1492,8 @@ func (g *GreenlightService) GetSupportedNIP47Methods() []string {
 		models.LIST_TRANSACTIONS_METHOD,
 		models.MULTI_PAY_INVOICE_METHOD,
 		models.MULTI_PAY_KEYSEND_METHOD,
-		// sign_message intentionally omitted: the VLS signer hangs on it
-		// and freezes the node (see SignMessage) — do not advertise a
-		// method that can wedge the hsmd queue.
+		// sign_message intentionally omitted: blocked by the GL signer (GL#739)
+		// (see SignMessage); older node stacks wedged on it.
 	}
 
 	return methods

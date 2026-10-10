@@ -864,8 +864,8 @@ func TestSignMessage(t *testing.T) {
 	svc, cleanup := newTestService(t, newMockNode())
 	defer cleanup()
 
-	// SignMessage is deliberately unsupported: the VLS signer hangs on
-	// signmessage and wedges the node's hsmd queue (see SignMessage).
+	// SignMessage is deliberately unsupported: the Greenlight signer
+	// intentionally blocks signmessage (GL#739; see SignMessage).
 	_, err := svc.SignMessage(context.Background(), "hello")
 	if err == nil {
 		t.Fatalf("expected SignMessage to return not-supported error")

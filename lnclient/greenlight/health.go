@@ -15,9 +15,10 @@ import (
 //
 // Greenlight nodes run on Blockstream infrastructure: the hub cannot
 // restart a wedged node the way it can restart an embedded LDK node. We
-// proved (Blockstream/greenlight#739) that a signmessage call freezes the
-// production VLS signer and wedges the hsmd queue until Blockstream
-// intervenes — and a wedged node silently stops processing payments.
+// observed (Blockstream/greenlight#739, closed: signmessage is blocked by
+// design) a signmessage call wedging the hsmd queue on an older node stack
+// until Blockstream intervened; a wedged node silently stops processing
+// payments, and other unanswerable signer requests could do the same.
 //
 // The watchdog detects both failure classes without piling more RPCs onto
 // a frozen node:

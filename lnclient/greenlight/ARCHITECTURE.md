@@ -139,8 +139,13 @@ Status of each issue: **blocked** (upstream dependency), **mitigated**
 `signmessage` sends a signing request the production VLS signer cannot
 answer; hsmd's queue wedges and the whole node freezes until Blockstream
 restarts it. Reproduced twice (hosted testnet node A; regtest harness,
-2026-08-08). Filed as [Blockstream/greenlight#739](https://github.com/Blockstream/greenlight/issues/739)
-— unacknowledged.
+2026-08-08). Filed as [Blockstream/greenlight#739](https://github.com/Blockstream/greenlight/issues/739);
+acknowledged and closed as completed on 2026-09-06 (cdecker, Aug 10
+comment): `signmessage` is intentionally blocked by the signer and is not
+part of the allowed API. Upstream gl-plugin (15b22cf) now rejects it
+immediately with `Unimplemented`; verified on the local regtest bench
+2026-10-10 (fails in 1 ms, invoices keep working). Hosted nodes still on
+an older plugin may wedge, so the hub never forwards it.
 
 - Mitigation: the backend stubs `SignMessage` (returns a clear error,
   never forwards). The health watchdog (health.go) detects a freeze and the

@@ -79,7 +79,7 @@ GREENLIGHT_NODE_URI=gl1<node_id>.nodes.gl.blckstrm.com:443
 | Pay / keysend result | sync, plus events | sync, plus reconciler events (same hub semantics) |
 | Payment received / sent notifications | yes | yes |
 | Hold invoices | yes | **no**: hosted nodes run no plugins |
-| sign_message | yes | **no**: freezes the hosted signer (GL#739) |
+| sign_message | yes | **no**: intentionally blocked by the Greenlight signer (GL#739, by design); older node stacks wedged on it |
 | Channel ready/closed notifications | yes | **no**: GL leaves Subscribe* unimplemented |
 | Open channel manually | yes | deferred (LSP opens channels on demand) |
 | ResetRouter | yes | not applicable (the node owns the graph) |
