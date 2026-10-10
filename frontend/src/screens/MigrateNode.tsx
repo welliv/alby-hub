@@ -131,6 +131,32 @@ export function MigrateNode() {
             another device or server.
           </p>
         </div>
+        {info?.autoUnlockPasswordEnabled && (
+          <div className="flex flex-col gap-1">
+            <div className="flex gap-3 items-center">
+              <TriangleAlertIcon className="size-4 text-destructive" />
+              <h3>Disable Auto Unlock first</h3>
+            </div>
+            <p className="text-sm ml-7">
+              Auto Unlock stores your unlock password on this device, so anyone
+              with this machine can open the migration file. Disable it in
+              Settings → Auto Unlock before creating the file.
+            </p>
+          </div>
+        )}
+        {info?.backendType === "GREENLIGHT" && (
+          <div className="flex flex-col gap-1">
+            <div className="flex gap-3 items-center">
+              <InfoIcon className="size-4" />
+              <h3>Greenlight node</h3>
+            </div>
+            <p className="text-sm ml-7">
+              Your channels stay on Blockstream&apos;s hosted node; this file
+              holds your encrypted keys and Hub data and reconnects the new Hub
+              to the same node. Only run one Hub per Greenlight node.
+            </p>
+          </div>
+        )}
         {info?.databaseType === "postgres" && (
           <div className="flex gap-3 items-center">
             <DatabaseIcon className="size-4" />
