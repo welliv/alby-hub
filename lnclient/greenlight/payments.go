@@ -141,7 +141,11 @@ func isDefinitiveRPCFailure(err error) bool {
 	case codes.Unavailable, codes.DeadlineExceeded, codes.Canceled, codes.Aborted, codes.ResourceExhausted:
 		return false
 	}
-	return strings.Contains(st.Message(), "Error code")
+	// two observed node-side error shapes: CLN JSON-RPC "Error code <n>"
+	// and gl-plugin passthrough "RpcError { code: Some(<n>)" (live: xpay
+	// 205 "no connection between source and destination").
+	m := st.Message()
+	return strings.Contains(m, "Error code") || strings.Contains(m, "RpcError { code: Some(")
 }
 
 // payOutcome is the aggregate state of all attempts for a payment.

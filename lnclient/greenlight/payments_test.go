@@ -147,6 +147,17 @@ func TestPayDefinitiveFailureIsFailed(t *testing.T) {
 	}
 }
 
+func TestPayDefinitiveFailureGlRpcErrorShape(t *testing.T) {
+	node := newMockNode()
+	node.xpayErr = status.Error(codes.Unknown, `Error calling method Xpay: RpcError { code: Some(205), message: "Failed: There is no connection between source and destination at all", data: None }`)
+	svc, cleanup := newTestService(t, node)
+	defer cleanup()
+	_, err := svc.SendPaymentSync(makeTestInvoice(t, testInvoiceOpts{amountMsat: 1000}), nil)
+	if err == nil || errors.Is(err, lnclient.ErrPaymentPending) {
+		t.Fatalf("live-observed xpay 205 must be a confirmed failure, got %v", err)
+	}
+}
+
 func TestPayErrorButNodeCompleteReconcilesSent(t *testing.T) {
 	var hash [32]byte
 	_, _ = rand.Read(hash[:])
