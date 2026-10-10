@@ -42,17 +42,20 @@ const (
 // nodeHealthStatus is what GetNodeStatus exposes in InternalNodeStatus
 // (additive; the interface field is interface{}).
 type nodeHealthStatus struct {
-	Healthy       bool         `json:"healthy"`
-	NodeConnected bool         `json:"node_connected"`
-	LastCheckAt   int64        `json:"last_check_at"` // unix seconds
-	LastError     string       `json:"last_error,omitempty"`
-	Signer        SignerStatus `json:"signer,omitempty"`
+	Healthy        bool         `json:"healthy"`
+	NodeConnected  bool         `json:"node_connected"`
+	LastCheckAt    int64        `json:"last_check_at"` // unix seconds
+	LastError      string       `json:"last_error,omitempty"`
+	Signer         SignerStatus `json:"signer,omitempty"`
+	Ready          bool         `json:"ready"`
+	Syncing        bool         `json:"syncing,omitempty"`
+	NotReadyReason string       `json:"not_ready_reason,omitempty"`
 }
 
 func (g *GreenlightService) startHealthWatchdog(ctx context.Context) {
 	go func() {
 		// immediate first check so GetNodeStatus is meaningful right away
-		g.runHealthCheck(ctx)
+		_, _ = g.runHealthCheck(ctx)
 		ticker := time.NewTicker(g.healthCheckInterval)
 		defer ticker.Stop()
 

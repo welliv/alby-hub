@@ -3,6 +3,7 @@ package greenlight
 import (
 	"bytes"
 	"context"
+	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/encoding/protowire"
@@ -63,21 +64,24 @@ func TestMakeInvoiceFallsBackWhenLspUnavailable(t *testing.T) {
 	}
 }
 
-func TestMakeInvoiceJitFallsBackWithoutLsp(t *testing.T) {
+func TestMakeInvoiceNoInboundNoLspFailsClearly(t *testing.T) {
 	node := newMockNode()
 	zero := uint64(0)
 	node.receivable = &zero
 	svc, cleanup := newTestService(t, node)
 	defer cleanup()
+	// an invoice above inbound capacity is unpayable: must be a clear
+	// error, never a silently-minted dead invoice
 	tx, err := svc.MakeInvoice(context.Background(), 100000, "needs jit", "", 3600, nil)
-	if err != nil {
-		t.Fatalf("MakeInvoice should fall back to Invoice: %v", err)
+	if err == nil || tx != nil {
+		t.Fatalf("expected a clear error, got tx=%v", tx)
 	}
-	if tx.Invoice == "" {
-		t.Fatal("expected fallback bolt11")
+	if !strings.Contains(err.Error(), "inbound liquidity") {
+		t.Fatalf("unclear error: %v", err)
 	}
-	if tx.FeesPaidMsat != 0 {
-		t.Fatalf("fallback fee should be 0, got %d", tx.FeesPaidMsat)
+	// amountless invoices are still allowed
+	if _, err := svc.MakeInvoice(context.Background(), 0, "any", "", 3600, nil); err != nil {
+		t.Fatalf("amountless invoice: %v", err)
 	}
 }
 

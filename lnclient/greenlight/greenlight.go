@@ -428,6 +428,10 @@ func (g *GreenlightService) MakeInvoice(ctx context.Context, amountMsat int64, d
 					},
 				})
 			}
+			// A regular invoice above inbound capacity is unpayable: fail
+			// clearly instead of handing the payer a dead invoice.
+			return nil, fmt.Errorf("cannot receive %d sats: inbound liquidity is %d sats and the LSP could not open a channel (%s)",
+				amountMsat/1000, inbound/1000, lspErrorReason(jitErr))
 		}
 	}
 
@@ -805,7 +809,7 @@ func (g *GreenlightService) GetNodeStatus(ctx context.Context) (*lnclient.NodeSt
 	if !cacheWarm {
 		// cold cache (first seconds after startup): warm it with one
 		// bounded probe — never more than the health timeout
-		g.runHealthCheck(ctx)
+		_, _ = g.runHealthCheck(ctx)
 	}
 
 	g.healthMtx.RLock()
@@ -825,14 +829,21 @@ func (g *GreenlightService) GetNodeStatus(ctx context.Context) (*lnclient.NodeSt
 		hs.Signer = g.config.SignerStatusProvider()
 	}
 
+	// One rule, mirrored in InternalNodeStatus so the UI never shows
+	// "healthy" next to "not ready" without saying why.
 	ready := hs.NodeConnected
-	if info != nil && (info.WarningBitcoindSync != nil || info.WarningLightningdSync != nil) {
+	switch {
+	case !hs.NodeConnected:
+		hs.NotReadyReason = "node unreachable"
+	case g.config.SignerStatusProvider != nil && !hs.Signer.Running:
 		ready = false
-	}
-	// Product path wires a signer provider: ready means node + signer.
-	if g.config.SignerStatusProvider != nil && !hs.Signer.Running {
+		hs.NotReadyReason = "signer not running"
+	case info != nil && (info.WarningBitcoindSync != nil || info.WarningLightningdSync != nil):
 		ready = false
+		hs.Syncing = true
+		hs.NotReadyReason = "node syncing"
 	}
+	hs.Ready = ready
 
 	return &lnclient.NodeStatus{
 		IsReady:            ready,
@@ -1707,4 +1718,18 @@ func confirmationsRequiredFromStatus(status []string) (uint32, *string) {
 
 	errNotFound := "Could not find status indicating number of confirmations required"
 	return 0, &errNotFound
+}
+
+func lspErrorReason(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+	msg := err.Error()
+	if i := strings.LastIndex(msg, "Error code"); i >= 0 {
+		msg = msg[i:]
+	}
+	if len(msg) > 200 {
+		msg = msg[:200]
+	}
+	return msg
 }
