@@ -36,25 +36,55 @@ GREENLIGHT_CREDS_PATH=/path/to/greenlight-creds
 GREENLIGHT_NODE_URI=gl1<node_id>.nodes.gl.blckstrm.com:443
 ```
 
-## Status
+## Requirements
 
-30 of 35 LNClient methods implemented via standard CLN gRPC. 4 are honest
-`ErrUnsupported` (hold invoices, signmessage — architecturally blocked). 1
-stub. Tested live on Blockstream testnet: invoices created, addresses
-generated, balances reported, backup/restore proven.
+- `glcli` **>= 0.1.3** built from https://github.com/Blockstream/greenlight
+  (`cargo install --git https://github.com/Blockstream/greenlight gl-cli --locked`).
+  The hub checks for `signer run --backup-path` at signer start and refuses
+  an older glcli with a clear error. crates.io `gl-cli 0.1.1` is too old.
+- No Python: device credentials are extracted in Go (`creds.go`).
 
-## What we added on top
+## Fund-safety behaviour
 
-Greenlight provides the signer and node. We added what a hub needs to run
-it as a service:
+- Every invoice is validated in Go before it reaches the node/signer
+  (network, signature, payment secret, var_onion, unknown required feature
+  bits, expiry, amount). A malformed invoice once froze a live testnet node
+  when the VLS signer rejected it, so such invoices are never forwarded.
+- Every gRPC call has a deadline (30 s default, 3 min for pay/keysend).
+- Pay/keysend errors are classified: only a node-side failure with no
+  pending/complete attempt marks a payment failed. Transport errors,
+  timeouts and anything else return `lnclient.ErrPaymentPending`. The hub
+  keeps the payment pending (budget stays reserved) and the reconciler
+  (`payments.go`) polls `ListPays` until it is final, then emits
+  `nwc_lnclient_payment_sent` / `_failed`. On startup the last 7 days of node
+  payments are replayed (this is idempotent in the hub).
+- Keysends are labelled so they can be reconciled even though CLN derives
+  its own preimage. The hub remaps the recorded hash.
+- The incoming invoice cursor is persisted only after publish, so a replay
+  is harmless and a skip is impossible. Keysends recorded as invoices
+  without bolt11 are still credited.
+- JIT (LSPS2) receives credit what the node actually received; the LSP skim
+  is reported as the fee, as on LDK. Amounts above inbound liquidity that
+  the LSP refuses (for example below its minimum) fail with a clear error
+  instead of producing an unpayable invoice.
+- Secrets: the mnemonic is stored encrypted in the hub config DB (same as
+  LDK). `hsm_secret` is written only while the hub is unlocked and is
+  shredded on lock or stop. All glcli output is sanitized. The data dir is
+  forced to 0700 and its files to 0600.
 
-- **Signer supervisor** — 15s respawn, SIGTERM→KILL, Signal(0) liveness,
-  health surfaced in `GetNodeStatus`
-- **Health watchdog** — periodic Getinfo, pump-stall detection, degraded boot
-  (a frozen node doesn't lock you out of your hub)
-- **WaitAnyInvoice pump** — persisted pay index, busy-loop protection
-- **Provisioning** — mnemonic→seed→register→extract creds→launch signer,
-  fully automated
+## Parity with LDK and inherent gaps
+
+| Area | LDK | Greenlight |
+|---|---|---|
+| Pay / keysend result | sync, plus events | sync, plus reconciler events (same hub semantics) |
+| Payment received / sent notifications | yes | yes |
+| Hold invoices | yes | **no**: hosted nodes run no plugins |
+| sign_message | yes | **no**: freezes the hosted signer (GL#739) |
+| Channel ready/closed notifications | yes | **no**: GL leaves Subscribe* unimplemented |
+| Open channel manually | yes | deferred (LSP opens channels on demand) |
+| ResetRouter | yes | not applicable (the node owns the graph) |
+| Node availability | local | depends on Blockstream; a frozen node needs their restart |
+| Backup | seed + VSS | mnemonic in encrypted DB; `backup.json` SCB once channels exist |
 
 ## Backups and exit strategy
 
