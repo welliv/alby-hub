@@ -1,7 +1,6 @@
 package greenlight
 
 import (
-	_ "embed"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,18 +12,15 @@ import (
 	"github.com/tyler-smith/go-bip39"
 )
 
-//go:embed extract_creds.py
-var embeddedExtractCreds string
-
 const (
 	seedFileName        = "hsm_secret"
 	credentialsFileName = "credentials.gfs"
 	deviceCredsDirName  = "device-creds"
 )
 
-// sanitizeOutput strips the mnemonic from glcli output (e.g. "New seed
-// generated from mnemonic: ...") before logging or returning in errors.
-var reMnemonic = regexp.MustCompile(`mnemonic:\s*\\S.*`) // rest of mnemonic line
+// reMnemonic matches the rest of a "mnemonic: ..." line (kept for tests;
+// sanitizeGlcliOutput is the full filter used on every glcli output).
+var reMnemonic = regexp.MustCompile(`mnemonic:\s*\S.*`)
 
 // MnemonicToSeed32 matches gl-cli: mnemonic.to_seed("")[0..32], 12 words only.
 func MnemonicToSeed32(mnemonic string) ([]byte, error) {
@@ -114,7 +110,7 @@ func ShredSeedFile(dataDir string) error {
 
 // EnsureProvisioned writes seed from mnemonic, registers/recovers via glcli if needed,
 // extracts device PEMs, and returns (deviceCredsDir, nodeURI).
-func EnsureProvisioned(dataDir, network, glcliPath, nobodyCrt, nobodyKey, mnemonic, extractScript string) (credsDir, nodeURI string, err error) {
+func EnsureProvisioned(dataDir, network, glcliPath, nobodyCrt, nobodyKey, mnemonic string) (credsDir, nodeURI string, err error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return "", "", err
 	}
@@ -160,13 +156,13 @@ func EnsureProvisioned(dataDir, network, glcliPath, nobodyCrt, nobodyKey, mnemon
 		}
 		cmd.Env = env
 		out, err := cmd.CombinedOutput()
-		s := string(out)
-		// strip seed/mnemonic from output before logging or including in errors
-		sanitized := reMnemonic.ReplaceAllString(s, "mnemonic: [redacted]")
+		// strip seed/mnemonic from output before it is logged, returned
+		// or embedded in an error — callers only ever see sanitized text
+		sanitized := strings.TrimSpace(sanitizeGlcliOutput(string(out)))
 		if err != nil {
-			return s, fmt.Errorf("%w: %s", err, strings.TrimSpace(sanitized))
+			return sanitized, fmt.Errorf("%w: %s", err, sanitized)
 		}
-		return s, nil
+		return sanitized, nil
 	}
 
 	if needRegister {
@@ -187,16 +183,19 @@ func EnsureProvisioned(dataDir, network, glcliPath, nobodyCrt, nobodyKey, mnemon
 			logger.Logger.WithError(regErr).Warn("register failed, trying recover")
 			out2, recErr := run("-d", dataDir, "-n", network, "scheduler", "recover")
 			if recErr != nil {
-				return "", "", fmt.Errorf("register failed (%v); recover failed: %w\nregister: %s\nrecover: %s", regErr, recErr, out, out2)
+				return "", "", fmt.Errorf("register failed (%v); recover failed: %w\nregister: %s\nrecover: %s", regErr, recErr, out, out2) // outputs are sanitized
 			}
 			logger.Logger.Info("Recovered greenlight device credentials")
 		} else {
-			logger.Logger.WithField("out", strings.TrimSpace(out)).Info("Registered greenlight node")
+			logger.Logger.WithField("out", out).Info("Registered greenlight node") // sanitized
 		}
 	}
 
 	if _, err := os.Stat(credsBlob); err != nil {
 		return "", "", fmt.Errorf("credentials.gfs missing in %s", dataDir)
+	}
+	if err := os.Chmod(credsBlob, 0o600); err != nil {
+		return "", "", fmt.Errorf("chmod credentials.gfs: %w", err)
 	}
 
 	// schedule (wake)
@@ -205,47 +204,14 @@ func EnsureProvisioned(dataDir, network, glcliPath, nobodyCrt, nobodyKey, mnemon
 	}
 
 	credsDir = filepath.Join(dataDir, deviceCredsDirName)
-	if extractScript != "" {
-		if _, err := os.Stat(extractScript); err != nil {
-			// caller-supplied path missing: fall back to the embedded copy
-			logger.Logger.WithField("path", extractScript).Warn("extract_creds.py path not found, using embedded copy")
-			extractScript = ""
-		}
-	}
-	if extractScript == "" {
-		// deployment-independent: write the embedded script next to the node
-		// data (no CWD or machine-specific path assumptions).
-		extractScript = filepath.Join(dataDir, "extract_creds.py")
-		if err := os.WriteFile(extractScript, []byte(embeddedExtractCreds), 0o600); err != nil {
-			return "", "", fmt.Errorf("write embedded extract_creds: %w", err)
-		}
-	}
-	// resolve python3 via LookPath (not plain "python3" from PATH) for exec
-	python3, err := exec.LookPath("python3")
+	nodeURI, err = extractDeviceCreds(credsBlob, credsDir)
 	if err != nil {
-		return "", "", fmt.Errorf("python3 not found in PATH: %w", err)
+		return "", "", fmt.Errorf("extract device credentials: %w", err)
 	}
-	cmd := exec.Command(python3, extractScript, credsBlob, credsDir)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", "", fmt.Errorf("extract_creds failed: %w: %s", err, string(out))
+	if err := hardenPerms(dataDir); err != nil {
+		return "", "", fmt.Errorf("harden greenlight data dir permissions: %w", err)
 	}
-	logger.Logger.Info(strings.TrimSpace(string(out)))
-
-	// parse GREENLIGHT_NODE_URI=... from extract output
-	re := regexp.MustCompile(`GREENLIGHT_NODE_URI=(\S+)`)
-	if m := re.FindSubmatch(out); len(m) == 2 {
-		nodeURI = string(m[1])
-	}
-	if nodeURI == "" {
-		re2 := regexp.MustCompile(`node domain:\s*(\S+)`)
-		if m := re2.FindSubmatch(out); len(m) == 2 {
-			nodeURI = string(m[1]) + ":443"
-		}
-	}
-	if nodeURI == "" {
-		return "", "", fmt.Errorf("could not derive node URI from extract_creds output")
-	}
+	logger.Logger.WithField("node_uri", nodeURI).Info("Extracted greenlight device credentials")
 
 	// Required PEMs
 	for _, f := range []string{"ca.pem", "client.pem", "client-key.pem"} {

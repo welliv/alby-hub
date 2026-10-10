@@ -630,12 +630,8 @@ func (svc *service) launchGreenlight(ctx context.Context, encryptionKey string) 
 		if nobodyKey == "" {
 			nobodyKey = os.Getenv("GL_NOBODY_KEY")
 		}
-		extractScript := ""
-		if _, err := os.Stat(path.Join("lnclient", "greenlight", "extract_creds.py")); err == nil {
-			extractScript = path.Join("lnclient", "greenlight", "extract_creds.py")
-		}
 		dir, uri, err := greenlight.EnsureProvisioned(
-			signerDir, glNet, env.GreenlightGlcliPath, nobodyCrt, nobodyKey, mnemonic, extractScript,
+			signerDir, glNet, env.GreenlightGlcliPath, nobodyCrt, nobodyKey, mnemonic,
 		)
 		if err != nil {
 			_ = greenlight.ShredSeedFile(signerDir)
