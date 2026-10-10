@@ -138,3 +138,25 @@ func TestIsNodeUnreachable(t *testing.T) {
 		t.Fatal("LSP/application errors are not unreachable")
 	}
 }
+
+func TestDecodePubkeyRejectsMalformed(t *testing.T) {
+	good := "0299c5091f454d2e2ac8a82b1772bb2ed95db498c0756fb9ed495813a73e5f9b0e"
+	if b, err := decodePubkey(good); err != nil || len(b) != 33 {
+		t.Fatalf("valid pubkey rejected: %v", err)
+	}
+	for _, bad := range []string{"", "00", "zz", good[:64], good + "00",
+		"0499c5091f454d2e2ac8a82b1772bb2ed95db498c0756fb9ed495813a73e5f9b0e",
+		"02" + strings.Repeat("ff", 32)} {
+		if _, err := decodePubkey(bad); err == nil {
+			t.Fatalf("malformed pubkey %q accepted (would panic gl-plugin)", bad)
+		}
+	}
+}
+
+func TestNetworkGraphEmptyNodeIdNeverReachesNode(t *testing.T) {
+	svc, cleanup := newTestService(t, newMockNode())
+	defer cleanup()
+	if _, err := svc.GetNetworkGraph(context.Background(), []string{""}); err == nil {
+		t.Fatal("empty node id must be rejected locally")
+	}
+}

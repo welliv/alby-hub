@@ -28,6 +28,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/getAlby/hub/events"
 	"github.com/getAlby/hub/lnclient"
 	"github.com/getAlby/hub/lnclient/cln/clngrpc"
@@ -285,7 +286,7 @@ func (g *GreenlightService) SendKeysend(amount uint64, destination string, custo
 		"destination": destination,
 	}).Debug("Send Keysend")
 
-	Destination, err := hex.DecodeString(destination)
+	Destination, err := decodePubkey(destination)
 	if err != nil || len(Destination) != 33 {
 		return nil, fmt.Errorf("invalid keysend destination pubkey")
 	}
@@ -489,7 +490,7 @@ func (g *GreenlightService) MakeInvoice(ctx context.Context, amountMsat int64, d
 	}
 
 	if throughNodePubkey != nil {
-		throughNodePubkeyBytes, err := hex.DecodeString(*throughNodePubkey)
+		throughNodePubkeyBytes, err := decodePubkey(*throughNodePubkey)
 		if err != nil {
 			return nil, err
 		}
@@ -912,7 +913,7 @@ func (g *GreenlightService) OpenChannel(ctx context.Context, openChannelRequest 
 		Amount: &clngrpc.Amount{Msat: uint64(openChannelRequest.AmountSats) * 1000},
 	}}
 
-	Id, err := hex.DecodeString(openChannelRequest.Pubkey)
+	Id, err := decodePubkey(openChannelRequest.Pubkey)
 	if err != nil {
 		return nil, fmt.Errorf("could not convert Pubkey to bytes")
 	}
@@ -992,7 +993,7 @@ func (g *GreenlightService) DisconnectPeer(ctx context.Context, peerId string) e
 		"peerId": peerId,
 	}).Debug("Disconnecting Peer")
 
-	pubkey, err := hex.DecodeString(peerId)
+	pubkey, err := decodePubkey(peerId)
 	if err != nil {
 		return err
 	}
@@ -1414,7 +1415,7 @@ func (g *GreenlightService) GetNetworkGraph(ctx context.Context, nodeIds []strin
 	listchannels := make([]*clngrpc.ListchannelsChannels, 0)
 
 	for _, nodeId := range nodeIds {
-		nodeIdBytes, err := hex.DecodeString(nodeId)
+		nodeIdBytes, err := decodePubkey(nodeId)
 		if err != nil {
 			logger.Logger.WithError(err).Error("failed to decode nodeId string")
 			return nil, fmt.Errorf("failed to decode nodeId string: %w", err)
@@ -1802,4 +1803,20 @@ func lspErrorReason(err error) string {
 func isNodeUnreachable(err error) bool {
 	c := status.Code(err)
 	return err != nil && (c == codes.Unavailable || c == codes.DeadlineExceeded)
+}
+
+// decodePubkey parses a hex secp256k1 node id. Every pubkey MUST pass through
+// this before reaching the hosted node: cln-grpc's request conversion does
+// PublicKey::from_slice(..).unwrap(), so a malformed id panics gl-plugin,
+// which is an "important" plugin, shutting the whole hosted lightningd down
+// (reproduced on the regtest bench with ListNodes{id: []}).
+func decodePubkey(s string) ([]byte, error) {
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		return nil, fmt.Errorf("invalid node pubkey: %w", err)
+	}
+	if _, err := btcec.ParsePubKey(b); err != nil || len(b) != 33 {
+		return nil, fmt.Errorf("invalid node pubkey %q", s)
+	}
+	return b, nil
 }
