@@ -451,6 +451,12 @@ func (svc *transactionsService) SendPaymentSync(payReq string, amountMsat *uint6
 			"bolt11": payReq,
 		}).WithError(err).Error("Failed to send payment")
 
+		if errors.Is(err, lnclient.ErrPaymentPending) {
+			// outcome unknown: keep the payment pending (budget stays
+			// reserved); the backend reconciles it via payment events
+			return nil, err
+		}
+
 		if _, markFailedErr := svc.markPaymentFailed(&dbTransaction, err.Error()); markFailedErr != nil {
 			logger.Logger.WithFields(logrus.Fields{
 				"bolt11": payReq,
@@ -583,6 +589,9 @@ func (svc *transactionsService) SendKeysend(amountMsat uint64, destination strin
 			"destination": destination,
 			"amount_msat": amountMsat,
 		}).WithError(err).Error("Failed to send payment")
+		if errors.Is(err, lnclient.ErrPaymentPending) {
+			return nil, err
+		}
 
 		if _, markFailedErr := svc.markPaymentFailed(&dbTransaction, err.Error()); markFailedErr != nil {
 			logger.Logger.WithFields(logrus.Fields{
@@ -932,6 +941,8 @@ func (svc *transactionsService) ConsumeEvent(ctx context.Context, event *events.
 		}
 
 		var dbTransaction db.Transaction
+
+		svc.remapRequestedPaymentHash(lnClientTransaction)
 
 		// first lookup by pending
 		result := svc.db.Limit(1).Find(&dbTransaction, &db.Transaction{
@@ -1816,4 +1827,25 @@ func (svc *transactionsService) markPaymentFailed(dbTransaction *db.Transaction,
 	}
 	svc.publishEvents(eventsToPublish)
 	return markedFailed, nil
+}
+
+
+// remapRequestedPaymentHash: CLN-family keysend derives its own preimage,
+// so a reconciled payment event can carry a different hash than the one the
+// hub recorded. When the event names the hash the hub recorded, rewrite the
+// pending transaction to the real hash/preimage before settlement lookup.
+func (svc *transactionsService) remapRequestedPaymentHash(lnClientTransaction *lnclient.Transaction) {
+	if lnClientTransaction == nil || lnClientTransaction.Metadata == nil {
+		return
+	}
+	requested, ok := lnClientTransaction.Metadata[lnclient.MetadataRequestedPaymentHash].(string)
+	if !ok || requested == "" || requested == lnClientTransaction.PaymentHash {
+		return
+	}
+	result := svc.db.Model(&db.Transaction{}).
+		Where("type = ? AND state = ? AND payment_hash = ?", constants.TRANSACTION_TYPE_OUTGOING, constants.TRANSACTION_STATE_PENDING, requested).
+		Updates(map[string]interface{}{"payment_hash": lnClientTransaction.PaymentHash})
+	if result.Error != nil {
+		logger.Logger.WithError(result.Error).Error("Failed to remap keysend payment hash")
+	}
 }
