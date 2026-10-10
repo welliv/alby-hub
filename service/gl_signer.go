@@ -29,7 +29,8 @@ type GreenlightSignerService struct {
 	glcli    string
 	pidPath  string
 	lastErr  string
-	cmd      *exec.Cmd // the live signer process, when spawned
+	cmd      *exec.Cmd     // the live signer process, when spawned
+	done     chan struct{} // closed when cmd exits
 
 	eventPublisher       events.EventPublisher // nil in external-signer mode
 	lastPublishedHealthy bool
@@ -195,11 +196,54 @@ func (s *GreenlightSignerService) resolveBinary() (string, error) {
 	return "", fmt.Errorf("glcli not found")
 }
 
+// checkGlcliCompat verifies the glcli binary supports the flags the hub
+// relies on. gl-cli 0.1.1 (crates.io) lacks --backup-path; without it the
+// signer would exit immediately and the node would be unable to sign.
+func checkGlcliCompat(bin string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, _ := exec.CommandContext(ctx, bin, "signer", "run", "--help").CombinedOutput()
+	if !strings.Contains(string(out), "--backup-path") {
+		ver, _ := exec.CommandContext(ctx, bin, "--version").CombinedOutput()
+		return fmt.Errorf("unsupported glcli %q (%s): signer run lacks --backup-path; install gl-cli >= 0.1.3 from https://github.com/Blockstream/greenlight", bin, strings.TrimSpace(string(ver)))
+	}
+	return nil
+}
+
+// reapOrphan kills a signer left behind by a previous hub process (hub
+// crash), but only if the pid really is our glcli for this data dir — a
+// stale pid file may point at an unrelated, reused pid.
+func (s *GreenlightSignerService) reapOrphan() {
+	data, err := os.ReadFile(s.pidPath)
+	if err != nil {
+		return
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	_ = os.Remove(s.pidPath)
+	if err != nil || pid <= 1 {
+		return
+	}
+	cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil {
+		return
+	}
+	c := string(cmdline)
+	if strings.Contains(c, "glcli") && strings.Contains(c, s.dataDir) && strings.Contains(c, "signer") {
+		logger.Logger.WithField("pid", pid).Warn("killing orphaned greenlight signer from a previous hub run")
+		_ = syscall.Kill(-pid, syscall.SIGKILL) // own process group (Setsid)
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	}
+}
+
 func (s *GreenlightSignerService) spawn() error {
 	bin, err := s.resolveBinary()
 	if err != nil {
 		return err
 	}
+	if err := checkGlcliCompat(bin); err != nil {
+		return err
+	}
+	s.reapOrphan()
 	backupPath := filepath.Join(s.dataDir, "backup.json")
 	args := []string{
 		"-d", s.dataDir,
@@ -212,7 +256,8 @@ func (s *GreenlightSignerService) spawn() error {
 	if err != nil {
 		return fmt.Errorf("open signer log: %w", err)
 	}
-	cmd := exec.Command(bin, args...)
+	_ = logF.Chmod(0o600)
+	cmd := exec.Command(bin, args...) // #nosec G204 -- resolved glcli path, fixed argv, no shell
 	cmd.Stdout = logF
 	cmd.Stderr = logF
 	cmd.Stdin = nil
@@ -221,72 +266,70 @@ func (s *GreenlightSignerService) spawn() error {
 		_ = logF.Close()
 		return fmt.Errorf("spawn glcli signer: %w", err)
 	}
-	// parent keeps logF open via cmd; reaper closes process, leave file to OS
 	pid := cmd.Process.Pid
-	_ = os.WriteFile(s.pidPath, []byte(strconv.Itoa(pid)), 0o600)
+	_ = os.WriteFile(s.pidPath, []byte(strconv.Itoa(pid)), 0o600) // informational + orphan reaping only
+	done := make(chan struct{})
 	s.mu.Lock()
 	s.cmd = cmd
+	s.done = done
 	s.mu.Unlock()
 	go func() {
 		_ = cmd.Wait()
 		_ = logF.Close()
-		// the process is gone: clear the tracked cmd so processAlive
-		// stops reporting it as alive (a stale pid file alone could be
-		// reused by an unrelated process)
+		close(done)
 		s.mu.Lock()
 		if s.cmd == cmd {
 			s.cmd = nil
+			s.done = nil
 		}
 		s.mu.Unlock()
 	}()
 	logger.Logger.WithFields(logrus.Fields{"pid": pid, "data_dir": s.dataDir, "log": logPath}).Info("glcli signer spawned")
-	// brief settle
-	time.Sleep(800 * time.Millisecond)
-	if !s.processAlive() {
+	select {
+	case <-done:
 		tail, _ := os.ReadFile(logPath)
-		return fmt.Errorf("signer exited immediately after spawn: %s", strings.TrimSpace(string(tail)))
+		msg := strings.TrimSpace(greenlight.SanitizeOutput(string(tail)))
+		if len(msg) > 2000 {
+			msg = msg[len(msg)-2000:]
+		}
+		return fmt.Errorf("signer exited immediately after spawn: %s", msg)
+	case <-time.After(800 * time.Millisecond):
 	}
 	return nil
 }
 
+// processAlive reports whether the exact process we spawned is running.
+// Liveness is tracked through the process handle and its exit channel,
+// never through the pid file (pids get reused).
 func (s *GreenlightSignerService) processAlive() bool {
 	s.mu.Lock()
-	cmd := s.cmd
+	done := s.done
 	s.mu.Unlock()
-	if cmd != nil && cmd.Process != nil {
-		// signal 0 probes liveness of the exact process we spawned —
-		// immune to pid-file staleness/pid reuse
-		return cmd.Process.Signal(syscall.Signal(0)) == nil
-	}
-	data, err := os.ReadFile(s.pidPath)
-	if err != nil {
+	if done == nil {
 		return false
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil || pid <= 0 {
+	select {
+	case <-done:
 		return false
+	default:
+		return true
 	}
-	return syscall.Kill(pid, 0) == nil
 }
 
 func (s *GreenlightSignerService) killSigner() {
-	data, err := os.ReadFile(s.pidPath)
-	if err != nil {
+	s.mu.Lock()
+	cmd, done := s.cmd, s.done
+	s.mu.Unlock()
+	if cmd == nil || cmd.Process == nil || done == nil {
 		return
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil || pid <= 0 {
-		return
+	pgid := cmd.Process.Pid
+	_ = syscall.Kill(-pgid, syscall.SIGTERM)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		<-done
 	}
-	_ = syscall.Kill(pid, syscall.SIGTERM)
-	// wait up to 3s then KILL
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if syscall.Kill(pid, 0) != nil {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	_ = syscall.Kill(pid, syscall.SIGKILL)
 	_ = os.Remove(s.pidPath)
 }

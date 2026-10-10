@@ -38,3 +38,6 @@ func sanitizeGlcliOutput(s string) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// SanitizeOutput is the exported form for the hub's signer supervisor.
+func SanitizeOutput(s string) string { return sanitizeGlcliOutput(s) }
