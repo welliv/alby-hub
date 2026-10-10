@@ -370,12 +370,15 @@ func (g *GreenlightService) MakeInvoice(ctx context.Context, amountMsat int64, d
 		"through_node_pubkey": throughNodePubkey,
 	}).Debug("Make Invoice")
 
+	if amountMsat < 0 || expiry < 0 {
+		return nil, fmt.Errorf("invalid amount or expiry")
+	}
 	label := "AlbyHub-" + uuid.NewString()
 
 	var deschashonly bool
 	if descriptionHash != "" {
 		if description == "" {
-			return nil, fmt.Errorf("Must have description when using description_hash")
+			return nil, fmt.Errorf("must have description when using description_hash")
 		}
 		myDescriptionHash := sha256.Sum256([]byte(description))
 		if descriptionHash != hex.EncodeToString(myDescriptionHash[:]) {
@@ -411,7 +414,7 @@ func (g *GreenlightService) MakeInvoice(ctx context.Context, amountMsat int64, d
 					Preimage:        "",
 					PaymentHash:     hex.EncodeToString(jit.PaymentHash),
 					AmountMsat:      amountMsat,
-					FeesPaidMsat:    int64(jit.OpeningFeeMsat),
+					FeesPaidMsat:    i64(jit.OpeningFeeMsat),
 					CreatedAt:       time.Now().Unix(),
 					ExpiresAt:       &expiresAt,
 					SettledAt:       nil,
@@ -885,7 +888,7 @@ func (g *GreenlightService) OpenChannel(ctx context.Context, openChannelRequest 
 
 	Id, err := hex.DecodeString(openChannelRequest.Pubkey)
 	if err != nil {
-		return nil, fmt.Errorf("Could not convert Pubkey to bytes")
+		return nil, fmt.Errorf("could not convert Pubkey to bytes")
 	}
 
 	req := &clngrpc.FundchannelRequest{
@@ -1153,7 +1156,7 @@ func (g *GreenlightService) GetBalances(ctx context.Context, includeInactiveChan
 		}
 
 		if ch.SpendableMsat != nil {
-			spendable := int64(ch.SpendableMsat.Msat)
+			spendable := i64(ch.SpendableMsat.Msat)
 			lightning.TotalSpendableMsat += spendable
 
 			if spendable > lightning.NextMaxSpendableMsat {
@@ -1162,7 +1165,7 @@ func (g *GreenlightService) GetBalances(ctx context.Context, includeInactiveChan
 		}
 
 		if ch.ReceivableMsat != nil {
-			receivable := int64(ch.ReceivableMsat.Msat)
+			receivable := i64(ch.ReceivableMsat.Msat)
 			lightning.TotalReceivableMsat += receivable
 
 			if receivable > lightning.NextMaxReceivableMsat {
@@ -1507,15 +1510,15 @@ func (g *GreenlightService) clnInvoiceToTransaction(ctx context.Context, invoice
 	var amountMsat int64
 	var lspFeeMsat int64
 	if invoice.Status == clngrpc.ListinvoicesInvoices_PAID && invoice.AmountReceivedMsat != nil {
-		amountMsat = int64(invoice.AmountReceivedMsat.Msat)
+		amountMsat = i64(invoice.AmountReceivedMsat.Msat)
 		// LSPS2 JIT: the LSP skims its opening fee, so the node receives
 		// less than the invoice amount; report the skim as the fee (LDK
 		// reports CounterpartySkimmedFeeMsat the same way).
 		if invoice.AmountMsat != nil && invoice.AmountReceivedMsat.Msat < invoice.AmountMsat.Msat {
-			lspFeeMsat = int64(invoice.AmountMsat.Msat - invoice.AmountReceivedMsat.Msat)
+			lspFeeMsat = i64(invoice.AmountMsat.Msat - invoice.AmountReceivedMsat.Msat)
 		}
 	} else if invoice.AmountMsat != nil {
-		amountMsat = int64(invoice.AmountMsat.Msat)
+		amountMsat = i64(invoice.AmountMsat.Msat)
 	} else {
 		amountMsat = 0
 	}
@@ -1650,7 +1653,7 @@ func msatInt64(a *clngrpc.Amount) int64 {
 	if a == nil {
 		return 0
 	}
-	return int64(a.Msat)
+	return i64(a.Msat)
 }
 
 func satInt64(a *clngrpc.Amount) int64 {

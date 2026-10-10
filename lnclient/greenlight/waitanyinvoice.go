@@ -214,7 +214,7 @@ func (g *GreenlightService) paidInvoiceTransaction(ctx context.Context, resp *cl
 		Type:        "incoming",
 		PaymentHash: hash,
 		Preimage:    hex.EncodeToString(resp.PaymentPreimage),
-		AmountMsat:  int64(resp.AmountReceivedMsat.Msat),
+		AmountMsat:  i64(resp.AmountReceivedMsat.Msat),
 		CreatedAt:   settledAt,
 		SettledAt:   &settledAt,
 		Metadata:    lnclient.Metadata{},
@@ -226,7 +226,7 @@ func (g *GreenlightService) paidInvoiceTransaction(ctx context.Context, resp *cl
 		tx.Description = *resp.Description
 	}
 	if resp.AmountMsat != nil && resp.AmountReceivedMsat.Msat < resp.AmountMsat.Msat {
-		tx.FeesPaidMsat = int64(resp.AmountMsat.Msat - resp.AmountReceivedMsat.Msat)
+		tx.FeesPaidMsat = i64(resp.AmountMsat.Msat - resp.AmountReceivedMsat.Msat)
 	}
 	return tx
 }

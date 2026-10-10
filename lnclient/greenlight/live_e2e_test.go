@@ -202,7 +202,7 @@ func TestLiveE2E(t *testing.T) {
 	t.Run("StreamIncomingStaysAlive", func(t *testing.T) {
 		stream, err := gs.conn.NewStream(context.Background(),
 			&grpc.StreamDesc{ServerStreams: true}, "/greenlight.Node/StreamIncoming",
-			grpc.CallCustomCodec(rawCodec{}))
+			grpc.ForceCodec(rawCodec{}))
 		if err != nil {
 			t.Fatalf("StreamIncoming open: %v", err)
 		}

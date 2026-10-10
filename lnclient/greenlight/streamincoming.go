@@ -39,7 +39,7 @@ func (g *GreenlightService) streamIncoming(ctx context.Context) {
 
 		stream, err := g.conn.NewStream(ctx, &grpc.StreamDesc{
 			ServerStreams: true,
-		}, "/greenlight.Node/StreamIncoming", grpc.CallCustomCodec(rawCodec{}))
+		}, "/greenlight.Node/StreamIncoming", grpc.ForceCodec(rawCodec{}))
 		if err != nil {
 			logger.Logger.WithError(err).Error("Failed to open StreamIncoming")
 			if !sleepOrDone(ctx, 10*time.Second) {
@@ -103,7 +103,7 @@ func (g *GreenlightService) streamIncoming(ctx context.Context) {
 				Description:  "",
 				Preimage:     preimage,
 				PaymentHash:  paymentHash,
-				AmountMsat:   int64(amountMsat),
+				AmountMsat:   i64(amountMsat),
 				FeesPaidMsat: 0,
 				CreatedAt:    now,
 				SettledAt:    &now,

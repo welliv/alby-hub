@@ -30,7 +30,7 @@ func (g *GreenlightService) lspInvoice(ctx context.Context, amountMsat uint64, d
 	}
 	req := encodeLspInvoiceRequest(amountMsat, description, label)
 	resp := &lspInvoiceResponse{}
-	err := g.conn.Invoke(ctx, "/greenlight.Node/LspInvoice", req, resp, grpc.CallCustomCodec(rawCodec{}))
+	err := g.conn.Invoke(ctx, "/greenlight.Node/LspInvoice", req, resp, grpc.ForceCodec(rawCodec{}))
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +57,7 @@ func (g *GreenlightService) maxReceivableMsat(ctx context.Context) int64 {
 			continue
 		}
 		if ch.ReceivableMsat != nil {
-			total += int64(ch.ReceivableMsat.Msat)
+			total += i64(ch.ReceivableMsat.Msat)
 		}
 	}
 	return total

@@ -6,6 +6,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -128,17 +129,23 @@ func extractDeviceCreds(credsBlob, outDir string) (string, error) {
 
 // hardenPerms enforces 0700 on dirs and 0600 on files under dataDir.
 // glcli writes credentials.gfs world-readable; it holds the device key.
+// Operations are scoped to an os.Root so symlinks cannot escape dataDir.
 func hardenPerms(dataDir string) error {
-	return filepath.WalkDir(dataDir, func(p string, d os.DirEntry, err error) error {
+	root, err := os.OpenRoot(dataDir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return fs.WalkDir(root.FS(), ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if d.Type()&os.ModeSymlink != 0 {
+		if d.Type()&fs.ModeSymlink != 0 {
 			return nil
 		}
 		if d.IsDir() {
-			return os.Chmod(p, 0o700)
+			return root.Chmod(p, 0o700)
 		}
-		return os.Chmod(p, 0o600)
+		return root.Chmod(p, 0o600)
 	})
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -270,12 +271,12 @@ func (g *GreenlightService) publishPaymentSent(tp *trackedPayment, p *clngrpc.Li
 		Invoice:      tp.invoice,
 		Preimage:     hex.EncodeToString(p.Preimage),
 		PaymentHash:  hex.EncodeToString(p.PaymentHash),
-		AmountMsat:   int64(tp.amountMsat),
+		AmountMsat:   i64(tp.amountMsat),
 		FeesPaidMsat: int64(feeOf(p.AmountSentMsat, p.AmountMsat)),
 		Metadata:     lnclient.Metadata{},
 	}
 	if p.AmountMsat != nil {
-		tx.AmountMsat = int64(p.AmountMsat.Msat)
+		tx.AmountMsat = i64(p.AmountMsat.Msat)
 	}
 	if tp.requestedPaymentHash != "" {
 		tx.Metadata[lnclient.MetadataRequestedPaymentHash] = tp.requestedPaymentHash
@@ -291,7 +292,7 @@ func (g *GreenlightService) publishPaymentFailed(tp *trackedPayment, reason stri
 	}
 	logger.Logger.WithFields(logrus.Fields{"payment_hash": hash, "reason": reason}).Info("greenlight: reconciled payment as failed")
 	g.publish(&events.Event{Event: "nwc_lnclient_payment_failed", Properties: &lnclient.PaymentFailedEventProperties{
-		Transaction: &lnclient.Transaction{Type: "outgoing", PaymentHash: hash, Invoice: tp.invoice, AmountMsat: int64(tp.amountMsat)},
+		Transaction: &lnclient.Transaction{Type: "outgoing", PaymentHash: hash, Invoice: tp.invoice, AmountMsat: i64(tp.amountMsat)},
 		Reason:      reason,
 	}})
 }
@@ -369,3 +370,13 @@ func (g *GreenlightService) startupReconcile(ctx context.Context) {
 }
 
 const keysendLabelPrefix = "AlbyHub-keysend-"
+
+// i64 converts msat/sat values to int64, clamping instead of wrapping (a
+// malicious or buggy node must not be able to turn a huge uint64 into a
+// negative amount in hub accounting).
+func i64(u uint64) int64 {
+	if u > math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return int64(u) // #nosec G115 -- bounded above
+}
