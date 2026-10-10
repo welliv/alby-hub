@@ -20,6 +20,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/getAlby/hub/config"
+	"github.com/getAlby/hub/constants"
 	"github.com/getAlby/hub/events"
 	"github.com/getAlby/hub/lnclient"
 	"github.com/getAlby/hub/lnclient/bark"
@@ -504,6 +505,23 @@ func (svc *service) launchLNBackend(ctx context.Context, encryptionKey string) e
 			"vss_enabled": vssEnabled,
 		},
 	})
+
+	// Greenlight: if pending_payments.json was lost, re-arm reconciliation
+	// for every hub-pending outgoing payment (budget stays held until the
+	// hosted node confirms). Other backends reconcile via their own events.
+	if gl, ok := lnClient.(*greenlight.GreenlightService); ok {
+		var pending []db.Transaction
+		if err := svc.db.Where("type = ? AND state = ?", constants.TRANSACTION_TYPE_OUTGOING, constants.TRANSACTION_STATE_PENDING).Find(&pending).Error; err != nil {
+			logger.Logger.WithError(err).Warn("Failed to list pending payments for orphan recovery")
+		} else if len(pending) > 0 {
+			hashes := make([]string, 0, len(pending))
+			for _, tx := range pending {
+				hashes = append(hashes, tx.PaymentHash)
+			}
+			logger.Logger.WithField("count", len(hashes)).Info("Re-arming Greenlight payment reconciliation for hub-pending payments")
+			go gl.TrackOrphanPendingHashes(ctx, hashes)
+		}
+	}
 
 	return nil
 }

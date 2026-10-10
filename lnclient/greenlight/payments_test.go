@@ -1,6 +1,7 @@
 package greenlight
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"errors"
@@ -306,5 +307,50 @@ func TestTrackedPaymentsSurviveRestart(t *testing.T) {
 	svc3.loadTracked()
 	if len(svc3.reconciler.tracked) != 0 {
 		t.Fatal("untracked payment must not come back")
+	}
+}
+
+func TestTrackOrphanPendingHashesSettlesComplete(t *testing.T) {
+	node := newMockNode()
+	pre := []byte("0123456789abcdef0123456789abcdef")
+	hash := sha256.Sum256(pre)
+	node.pays = []*clngrpc.ListpaysPays{{
+		PaymentHash: hash[:], Status: clngrpc.ListpaysPays_COMPLETE, Preimage: pre,
+		AmountMsat: &clngrpc.Amount{Msat: 1000}, AmountSentMsat: &clngrpc.Amount{Msat: 1001},
+	}}
+	svc, cleanup := newTestService(t, node)
+	defer cleanup()
+	pub := &capturePublisher{}
+	svc.eventPublisher = pub
+	svc.TrackOrphanPendingHashes(svc.ctx, []string{hexOf(hash[:]), "zz", "00"})
+	if ev := pub.waitForEvent("nwc_lnclient_payment_sent", time.Second); ev == nil {
+		t.Fatal("expected settle from orphan reconcile")
+	}
+}
+
+func TestTrackOrphanPendingHashesTracksUnknown(t *testing.T) {
+	node := newMockNode()
+	svc, cleanup := newTestService(t, node)
+	defer cleanup()
+	h := hexOf(bytes.Repeat([]byte{0xab}, 32))
+	svc.TrackOrphanPendingHashes(svc.ctx, []string{h})
+	svc.reconciler.mu.Lock()
+	_, ok := svc.reconciler.tracked[h]
+	svc.reconciler.mu.Unlock()
+	if !ok {
+		t.Fatal("unknown hash must stay tracked (budget held)")
+	}
+}
+
+func TestResolvePaymentByHashDoesNotFreeWithoutEvidence(t *testing.T) {
+	svc, cleanup := newTestService(t, newMockNode())
+	defer cleanup()
+	h := hexOf(bytes.Repeat([]byte{0xcd}, 32))
+	res, err := svc.ResolvePaymentByHash(svc.ctx, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["action"] != "tracked" {
+		t.Fatalf("want tracked, got %v", res)
 	}
 }

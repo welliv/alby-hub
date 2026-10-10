@@ -1566,11 +1566,38 @@ func (g *GreenlightService) GetSupportedNIP47NotificationTypes() []string {
 }
 
 func (g *GreenlightService) GetCustomNodeCommandDefinitions() []lnclient.CustomNodeCommandDef {
-	return nil
+	return []lnclient.CustomNodeCommandDef{{
+		Name:        "resolve-payment",
+		Description: "Manually reconcile one pending payment against the hosted node (ListPays). Settles or fails only on definitive node evidence; otherwise keeps the budget held.",
+		Args: []lnclient.CustomNodeCommandArgDef{{
+			Name: "payment_hash", Description: "64-char hex payment hash",
+		}},
+	}}
 }
 
 func (g *GreenlightService) ExecuteCustomNodeCommand(ctx context.Context, command *lnclient.CustomNodeCommandRequest) (*lnclient.CustomNodeCommandResponse, error) {
-	return nil, lnclient.ErrUnknownCustomNodeCommand
+	if command == nil {
+		return nil, lnclient.ErrUnknownCustomNodeCommand
+	}
+	switch command.Name {
+	case "resolve-payment":
+		var hash string
+		for _, a := range command.Args {
+			if a.Name == "payment_hash" {
+				hash = a.Value
+			}
+		}
+		if hash == "" && len(command.Args) == 1 {
+			hash = command.Args[0].Value
+		}
+		res, err := g.ResolvePaymentByHash(ctx, hash)
+		if err != nil {
+			return nil, err
+		}
+		return &lnclient.CustomNodeCommandResponse{Response: res}, nil
+	default:
+		return nil, lnclient.ErrUnknownCustomNodeCommand
+	}
 }
 
 func (g *GreenlightService) clnInvoiceToTransaction(ctx context.Context, invoice *clngrpc.ListinvoicesInvoices) (*lnclient.Transaction, error) {

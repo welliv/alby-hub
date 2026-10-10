@@ -458,3 +458,91 @@ func preimageMatches(hash, preimage []byte) bool {
 	h := sha256.Sum256(preimage)
 	return subtle.ConstantTimeCompare(h[:], hash) == 1
 }
+
+// TrackOrphanPendingHashes re-arms reconciliation for hub-pending payment
+// hashes after pending_payments.json was lost or never written. For each
+// hash: ListPays → settle (verified preimage) / fail / track. Never frees a
+// budget without a definitive node record (no-record stays tracked until
+// noRecordFailAfter).
+func (g *GreenlightService) TrackOrphanPendingHashes(ctx context.Context, hashes []string) {
+	now := time.Now()
+	for _, h := range hashes {
+		if h == "" {
+			continue
+		}
+		b, err := hex.DecodeString(h)
+		if err != nil || len(b) != 32 {
+			continue
+		}
+		tp := &trackedPayment{PaymentHash: h, Started: now}
+		pays, err := g.listPaysFor(ctx, tp)
+		if err != nil {
+			logger.Logger.WithError(err).WithField("payment_hash", h).Warn("orphan reconcile: listpays failed; tracking anyway")
+			g.trackPayment(tp)
+			continue
+		}
+		outcome, p := aggregatePays(pays)
+		switch outcome {
+		case outcomeComplete:
+			if preimageMatches(p.PaymentHash, p.Preimage) {
+				g.publishPaymentSent(tp, p)
+			} else {
+				g.trackPayment(tp)
+			}
+		case outcomeFailed:
+			g.publishPaymentFailed(tp, "payment failed (orphan reconciliation)")
+		default:
+			// pending or none: keep tracking; budget stays held
+			g.trackPayment(tp)
+		}
+	}
+}
+
+// ResolvePaymentByHash is the admin manual-resolve path. It consults the
+// node once and only settles/fails on definitive ListPays evidence.
+// Returns a small status map for the /api/command UI.
+func (g *GreenlightService) ResolvePaymentByHash(ctx context.Context, hash string) (map[string]string, error) {
+	b, err := hex.DecodeString(hash)
+	if err != nil || len(b) != 32 {
+		return nil, fmt.Errorf("invalid payment hash")
+	}
+	tp := &trackedPayment{PaymentHash: hash, Started: time.Now()}
+	pays, err := g.listPaysFor(ctx, tp)
+	if err != nil {
+		return nil, fmt.Errorf("listpays: %w", err)
+	}
+	outcome, p := aggregatePays(pays)
+	out := map[string]string{"payment_hash": hash, "node_outcome": payOutcomeName(outcome)}
+	switch outcome {
+	case outcomeComplete:
+		if !preimageMatches(p.PaymentHash, p.Preimage) {
+			out["action"] = "none"
+			out["reason"] = "node reports complete but preimage does not match hash; budget held"
+			return out, nil
+		}
+		g.publishPaymentSent(tp, p)
+		out["action"] = "settled"
+		out["preimage"] = hex.EncodeToString(p.Preimage)
+	case outcomeFailed:
+		g.publishPaymentFailed(tp, "payment failed (manual resolve)")
+		out["action"] = "failed"
+	default:
+		g.trackPayment(tp)
+		out["action"] = "tracked"
+		out["reason"] = "no definitive node record; budget remains held until the node confirms"
+	}
+	return out, nil
+}
+
+func payOutcomeName(o payOutcome) string {
+	switch o {
+	case outcomeComplete:
+		return "complete"
+	case outcomeFailed:
+		return "failed"
+	case outcomePending:
+		return "pending"
+	default:
+		return "none"
+	}
+}
