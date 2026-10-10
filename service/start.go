@@ -684,6 +684,18 @@ func (svc *service) launchGreenlight(ctx context.Context, encryptionKey string) 
 		}
 	}
 
+	// DEV ONLY (regtest + explicit local scheduler): gl-testserver nodes
+	// listen on random localhost ports, so ask the scheduler each start.
+	if glNet == "regtest" && os.Getenv("GL_SCHEDULER_GRPC_URI") != "" {
+		uri, err := greenlight.ScheduleNodeURIForRegtest(signerDir, glNet, env.GreenlightGlcliPath)
+		if err != nil {
+			return nil, fmt.Errorf("regtest schedule: %w", err)
+		}
+		logger.Logger.WithField("node_uri", uri).Warn("greenlight DEV regtest override: using scheduler-provided node URI")
+		nodeURI = uri
+		serverName = ""
+	}
+
 	svc.startupState = "Connecting to Greenlight"
 	cfg := greenlight.Config{
 		CredsPath:     credsPath,

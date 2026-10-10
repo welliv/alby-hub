@@ -1,12 +1,14 @@
 package greenlight
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/getAlby/hub/logger"
 	"github.com/tyler-smith/go-bip39"
@@ -220,4 +222,31 @@ func EnsureProvisioned(dataDir, network, glcliPath, nobodyCrt, nobodyKey, mnemon
 		}
 	}
 	return credsDir, nodeURI, nil
+}
+
+var reGrpcURI = regexp.MustCompile(`grpc_uri:\s*"([^"]+)"`)
+
+// ScheduleNodeURIForRegtest asks the scheduler (via glcli) where the node
+// runs. DEV ONLY: used solely for network "regtest" against a local
+// gl-testserver whose nodes get random localhost ports per schedule. On
+// real networks the node URI is derived from the device certificate.
+func ScheduleNodeURIForRegtest(dataDir, network, glcliPath string) (string, error) {
+	if network != "regtest" {
+		return "", fmt.Errorf("scheduler node-uri override is regtest-only")
+	}
+	bin := glcliPath
+	if bin == "" {
+		bin = "glcli"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, bin, "-d", dataDir, "-n", network, "scheduler", "schedule").CombinedOutput() // #nosec G204 -- fixed argv
+	if err != nil {
+		return "", fmt.Errorf("glcli scheduler schedule: %w: %s", err, sanitizeGlcliOutput(string(out)))
+	}
+	m := reGrpcURI.FindStringSubmatch(string(out))
+	if m == nil {
+		return "", fmt.Errorf("no grpc_uri in schedule output")
+	}
+	return strings.TrimPrefix(strings.TrimPrefix(m[1], "https://"), "http://"), nil
 }
