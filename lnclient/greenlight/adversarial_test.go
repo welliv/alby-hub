@@ -114,3 +114,14 @@ func TestAdversarialGlcliArgsNoInjection(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+func TestAdversarialOpenChannelAmountWrap(t *testing.T) {
+	svc, cleanup := newTestService(t, newMockNode())
+	defer cleanup()
+	pk := "02f1d2e5f1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d"
+	for _, a := range []int64{0, -1, math.MinInt64, math.MaxInt64} {
+		if _, err := svc.OpenChannel(context.Background(), &lnclient.OpenChannelRequest{Pubkey: pk, AmountSats: a}); err == nil {
+			t.Fatalf("amount %d accepted", a)
+		}
+	}
+}

@@ -921,6 +921,11 @@ func (g *GreenlightService) OpenChannel(ctx context.Context, openChannelRequest 
 		"openChannelRequest": openChannelRequest,
 	}).Debug("Open Channel")
 
+	// int64 -> uint64: a negative amount would wrap to ~1.8e19 msat.
+	if openChannelRequest.AmountSats <= 0 || uint64(openChannelRequest.AmountSats) > maxAmountMsat/1000 {
+		return nil, fmt.Errorf("invalid channel amount %d sats", openChannelRequest.AmountSats)
+	}
+
 	Amount := clngrpc.AmountOrAll{Value: &clngrpc.AmountOrAll_Amount{
 		Amount: &clngrpc.Amount{Msat: uint64(openChannelRequest.AmountSats) * 1000},
 	}}
