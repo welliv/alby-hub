@@ -119,6 +119,25 @@ export default function Backup() {
           )
         }
       />
+      {info?.backendType === "GREENLIGHT" && (
+        <Alert className="mt-4">
+          <AlertTitle>Stuck or frozen Greenlight node?</AlertTitle>
+          <AlertDescription className="space-y-2 text-sm">
+            <p>
+              If payments hang and node status shows not ready: (1) wait for the
+              local signer to respawn (~15s), (2) if the hosted node stays
+              unhealthy, contact Blockstream Greenlight support — the Hub cannot
+              restart their infrastructure, (3) the Hub remains usable for
+              backups and apps in degraded mode.
+            </p>
+            <p className="text-muted-foreground">
+              Operator detail is in the repository at{" "}
+              <code className="text-xs">docs/GREENLIGHT.md</code> and{" "}
+              <code className="text-xs">docs/RUNBOOK.md</code>.
+            </p>
+          </AlertDescription>
+        </Alert>
+      )}
 
       <div className="space-y-6 pb-10">
         {hasMnemonic && (
@@ -377,10 +396,10 @@ export default function Backup() {
           !hasChannelManagement &&
           !info?.vssSupported &&
           info?.backendType !== "GREENLIGHT" && (
-          <p className="text-sm text-muted-foreground">
-            No recovery phrase or channel state backup present.
-          </p>
-        )}
+            <p className="text-sm text-muted-foreground">
+              No recovery phrase or channel state backup present.
+            </p>
+          )}
       </div>
     </>
   );

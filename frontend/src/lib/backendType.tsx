@@ -55,7 +55,7 @@ export const backendTypeConfigs: Record<BackendType, BackendTypeConfig> = {
     hasNodeBackup: false,
   },
   GREENLIGHT: {
-    title: "Greenlight",
+    title: "Greenlight (experimental)",
     // the official Greenlight lockup is designed for dark backgrounds —
     // a black badge with the white emblem reads on the (always-light)
     // setup wizard panel AND on dark-mode surfaces; the white-badge

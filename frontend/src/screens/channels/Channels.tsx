@@ -260,11 +260,13 @@ export default function Channels() {
                         Connected Peers
                       </Link>
                     </DropdownMenuItem>
-                    <DropdownMenuItem>
-                      <Link className="w-full" to="/wallet/sign-message">
-                        Sign Message
-                      </Link>
-                    </DropdownMenuItem>
+                    {info?.backendType !== "GREENLIGHT" && (
+                      <DropdownMenuItem>
+                        <Link className="w-full" to="/wallet/sign-message">
+                          Sign Message
+                        </Link>
+                      </DropdownMenuItem>
+                    )}
                     {info?.backendType === "LDK" && (
                       <ProDropdownMenuItem
                         onClick={() => navigate("/wallet/node-alias")}

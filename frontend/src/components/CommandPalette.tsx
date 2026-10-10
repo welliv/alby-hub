@@ -34,6 +34,7 @@ import {
   CommandSeparator,
 } from "src/components/ui/command";
 import { useApps } from "src/hooks/useApps";
+import { useInfo } from "src/hooks/useInfo";
 
 interface CommandPaletteProps {
   open?: boolean;
@@ -42,6 +43,7 @@ interface CommandPaletteProps {
 
 export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const navigate = useNavigate();
+  const { data: info } = useInfo();
   const [searchText, setSearchText] = React.useState("");
 
   const { data: connectedAppsByAppName } = useApps(
@@ -160,12 +162,16 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
             <LinkIcon />
             <span>Receive On-chain</span>
           </CommandItem>
-          <CommandItem
-            onSelect={() => runCommand(() => navigate("/wallet/sign-message"))}
-          >
-            <FileSignatureIcon />
-            <span>Sign Message</span>
-          </CommandItem>
+          {info?.backendType !== "GREENLIGHT" && (
+            <CommandItem
+              onSelect={() =>
+                runCommand(() => navigate("/wallet/sign-message"))
+              }
+            >
+              <FileSignatureIcon />
+              <span>Sign Message</span>
+            </CommandItem>
+          )}
         </CommandGroup>
         <CommandSeparator />
         <CommandGroup heading="Settings">
