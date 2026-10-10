@@ -123,3 +123,21 @@ func FuzzSanitize(f *testing.F) {
 		}
 	})
 }
+
+func TestReadSignerLogTailSanitizedAndBounded(t *testing.T) {
+	d := t.TempDir()
+	body := strings.Repeat("x", 5000) + "\nmnemonic: abandon abandon about\nok line\n"
+	if err := os.WriteFile(filepath.Join(d, "signer.log"), []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := readSignerLogTail(d, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) > 100 || strings.Contains(string(out), "abandon") || !strings.Contains(string(out), "ok line") {
+		t.Fatalf("bad tail %q", out)
+	}
+	if out, err := readSignerLogTail(t.TempDir(), 10); err != nil || len(out) != 0 {
+		t.Fatalf("missing log should be empty, got %q %v", out, err)
+	}
+}

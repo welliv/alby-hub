@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -1338,8 +1339,41 @@ func (g *GreenlightService) ListPeers(ctx context.Context) ([]lnclient.PeerDetai
 	return peers, nil
 }
 
+// GetLogOutput returns the tail of the local signer log (the only node-side
+// log the hub can see; the hosted lightningd log stays on Blockstream infra),
+// passed through the secret sanitizer.
 func (g *GreenlightService) GetLogOutput(ctx context.Context, maxLen int) ([]byte, error) {
-	return []byte{}, nil
+	return readSignerLogTail(g.config.SignerDataDir, maxLen)
+}
+
+func readSignerLogTail(dataDir string, maxLen int) ([]byte, error) {
+	if dataDir == "" {
+		return []byte{}, nil
+	}
+	f, err := os.Open(filepath.Join(dataDir, "signer.log"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []byte{}, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if maxLen <= 0 || maxLen > 1<<20 {
+		maxLen = 1 << 20
+	}
+	off := st.Size() - int64(maxLen)
+	if off < 0 {
+		off = 0
+	}
+	buf := make([]byte, st.Size()-off)
+	if _, err := f.ReadAt(buf, off); err != nil && err != io.EOF {
+		return nil, err
+	}
+	return []byte(sanitizeGlcliOutput(string(buf))), nil
 }
 
 func (g *GreenlightService) SignMessage(ctx context.Context, message string) (string, error) {
