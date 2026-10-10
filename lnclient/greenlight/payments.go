@@ -284,6 +284,10 @@ func (g *GreenlightService) listPaysFor(ctx context.Context, tp *trackedPayment)
 	if err != nil {
 		return nil, err
 	}
+	if len(h) != 32 {
+		// cln-grpc unwraps Sha256::from_slice: never send a bad hash.
+		return nil, fmt.Errorf("invalid payment hash length %d", len(h))
+	}
 	resp, err := g.client.ListPays(ctx, &clngrpc.ListpaysRequest{PaymentHash: h})
 	if err != nil {
 		return nil, err
