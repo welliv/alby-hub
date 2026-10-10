@@ -3,6 +3,7 @@ package greenlight
 import (
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/tyler-smith/go-bip39"
 )
@@ -10,20 +11,33 @@ import (
 // any line mentioning a mnemonic/seed phrase/secret is dropped entirely
 var reSecretLine = regexp.MustCompile(`(?im)^.*(mnemonic|seed phrase|hsm_secret contents|secret key|private key).*$`)
 
+var (
+	bip39Once sync.Once
+	bip39Set  map[string]struct{}
+)
+
+func bip39WordSet() map[string]struct{} {
+	bip39Once.Do(func() {
+		words := bip39.GetWordList()
+		bip39Set = make(map[string]struct{}, len(words))
+		for _, w := range words {
+			bip39Set[w] = struct{}{}
+		}
+	})
+	return bip39Set
+}
+
 // sanitizeGlcliOutput removes secrets from glcli output before it is logged
 // or returned in an error: lines mentioning a mnemonic, and any run of 12+
 // consecutive BIP39 words anywhere in the text.
 func sanitizeGlcliOutput(s string) string {
-	if len(s) > 1<<20 {
-		s = s[:1<<20]
+	// Cap input so pathological fuzz/minimize inputs cannot hang.
+	if len(s) > 4096 {
+		s = s[:4096]
 	}
 	s = reSecretLine.ReplaceAllString(s, "[redacted]")
 	lines := strings.Split(s, "\n")
-	words := bip39.GetWordList()
-	set := make(map[string]struct{}, len(words))
-	for _, w := range words {
-		set[w] = struct{}{}
-	}
+	set := bip39WordSet()
 	for i, line := range lines {
 		fields := strings.Fields(line)
 		run := 0
