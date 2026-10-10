@@ -1557,10 +1557,13 @@ func (api *api) GetInfo(ctx context.Context) (*InfoResponse, error) {
 	info.AlbyUserIdentifier = albyUserIdentifier
 
 	if lnClient != nil {
-		nodeInfo, err := lnClient.GetInfo(ctx)
+		// bounded: /api/info must answer even when a remote node is frozen
+		infoCtx, infoCancel := context.WithTimeout(ctx, 5*time.Second)
+		nodeInfo, err := lnClient.GetInfo(infoCtx)
+		infoCancel()
 		if err != nil {
 			logger.Logger.WithError(err).Error("Failed to get nodeInfo")
-			return nil, err
+			nodeInfo = &lnclient.NodeInfo{Network: api.cfg.GetNetwork()}
 		}
 
 		info.Network = nodeInfo.Network
