@@ -17,9 +17,10 @@ import (
 )
 
 const (
-	pumpStateFile         = "pump_state.json"
-	waitAnyInvoiceTimeout = uint64(30) // seconds; GL serves the Wait family on cln.Node
-	defaultPumpRetryDelay = 10 * time.Second
+	pumpStateFile                 = "pump_state.json"
+	waitAnyInvoiceTimeout         = uint64(30) // seconds; GL serves the Wait family on cln.Node
+	waitAnyInvoiceTimeoutDuration = time.Duration(waitAnyInvoiceTimeout) * time.Second
+	defaultPumpRetryDelay         = 10 * time.Second
 )
 
 type pumpState struct {

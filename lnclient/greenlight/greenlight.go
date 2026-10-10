@@ -81,6 +81,8 @@ type GreenlightService struct {
 	healthCheckTimeout     time.Duration
 	healthFailureThreshold int
 	pumpStallThreshold     time.Duration
+
+	reconciler payReconciler
 }
 
 func NewGreenlightService(ctx context.Context, eventPublisher events.EventPublisher, workDir string, config Config) (lnclient.LNClient, error) {
@@ -108,7 +110,7 @@ func NewGreenlightService(ctx context.Context, eventPublisher events.EventPublis
 
 	creds := credentials.NewTLS(tlsConfig)
 
-	conn, err := grpc.NewClient(nodeURI, grpc.WithTransportCredentials(creds))
+	conn, err := grpc.NewClient(nodeURI, grpc.WithTransportCredentials(creds), grpc.WithUnaryInterceptor(deadlineInterceptor))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to greenlight gRPC: %w", err)
 	}
@@ -142,6 +144,9 @@ func NewGreenlightService(ctx context.Context, eventPublisher events.EventPublis
 		logger.Logger.WithError(err).Warn("greenlight node unreachable at boot — starting degraded; the health watchdog will keep probing (a frozen node may need a Blockstream restart)")
 	} else {
 		svc.pubkey = info.Pubkey
+		if svc.config.Network == "" {
+			svc.config.Network = info.Network
+		}
 		logger.Logger.Info("Successfully connected to greenlight via gRPC")
 	}
 
@@ -152,6 +157,7 @@ func NewGreenlightService(ctx context.Context, eventPublisher events.EventPublis
 	// and streamIncoming (keysends) below.
 	go svc.waitForInvoices(ctx)
 	go svc.streamIncoming(ctx)
+	go svc.runReconciler(ctx)
 
 	// node health watchdog (health.go): detects a wedged/frozen node even
 	// when the node itself stops responding — GetNodeStatus then serves the
@@ -210,75 +216,94 @@ func loadTLSCredentials(credsPath string, serverName string) (*tls.Config, error
 }
 
 func (g *GreenlightService) SendPaymentSync(payReq string, amount *uint64) (*lnclient.PayInvoiceResponse, error) {
-	logger.Logger.WithFields(logrus.Fields{
-		"payReq": payReq,
-		"amount": amount,
-	}).Debug("Send Payment Sync")
-
-	dec_req := &clngrpc.DecodeRequest{
-		String_: payReq,
-	}
-
-	dec_resp, err := g.client.Decode(g.ctx, dec_req)
+	inv, err := validateBolt11(payReq, g.config.Network, amount, time.Now())
 	if err != nil {
-		logger.Logger.WithError(err).Error("decode failed")
-		return nil, fmt.Errorf("decode failed: %w", err)
+		return nil, err
 	}
-	if dec_resp == nil {
-		return nil, fmt.Errorf("decode result empty")
-	}
-	if !dec_resp.Valid {
-		return nil, fmt.Errorf("payReq not valid")
-	}
+	paymentHash := hex.EncodeToString(inv.PaymentHash[:])
+	logger.Logger.WithFields(logrus.Fields{"payment_hash": paymentHash, "amount": amount}).Debug("Send Payment Sync")
 
 	var amountMsat *clngrpc.Amount
-	if amount != nil {
-		amountMsat = &clngrpc.Amount{
-			Msat: *amount,
+	if amount != nil && (inv.MilliSat == nil || *inv.MilliSat == 0) {
+		amountMsat = &clngrpc.Amount{Msat: *amount}
+	}
+	retryFor := uint32(payRetryForSeconds)
+	ctx, cancel := context.WithTimeout(g.ctx, payRPCTimeout)
+	defer cancel()
+	resp, err := g.client.Xpay(ctx, &clngrpc.XpayRequest{Invstring: payReq, AmountMsat: amountMsat, RetryFor: &retryFor})
+	if err == nil {
+		return &lnclient.PayInvoiceResponse{
+			Preimage: hex.EncodeToString(resp.PaymentPreimage),
+			FeeMsat:  feeOf(resp.AmountSentMsat, resp.AmountMsat),
+		}, nil
+	}
+	tp := &trackedPayment{paymentHash: paymentHash, invoice: payReq, started: time.Now()}
+	if inv.MilliSat != nil {
+		tp.amountMsat = uint64(*inv.MilliSat)
+	} else if amount != nil {
+		tp.amountMsat = *amount
+	}
+	return nil, g.resolvePayError(err, tp, "xpay")
+}
+
+// resolvePayError decides whether a pay/keysend error is a confirmed
+// failure or an ambiguous outcome. It consults the node's payment records:
+// only a definitive node-side failure with no pending/complete attempt is
+// reported as failure; everything else is ErrPaymentPending + tracking.
+func (g *GreenlightService) resolvePayError(payErr error, tp *trackedPayment, op string) error {
+	logger.Logger.WithError(payErr).WithField("payment_hash", tp.paymentHash).Warn(op + " returned an error, checking node payment records")
+	ctx, cancel := context.WithTimeout(g.ctx, defaultRPCTimeout)
+	defer cancel()
+	pays, lerr := g.listPaysFor(ctx, tp)
+	if lerr == nil {
+		outcome, _ := aggregatePays(pays)
+		switch outcome {
+		case outcomeComplete:
+			// succeeded despite the error: let the reconciler publish the
+			// sent event with the real preimage
+			g.trackPayment(tp)
+			return fmt.Errorf("%w: %s reported an error but the node shows the payment complete", lnclient.ErrPaymentPending, op)
+		case outcomePending:
+			g.trackPayment(tp)
+			return fmt.Errorf("%w: %v", lnclient.ErrPaymentPending, payErr)
+		case outcomeFailed, outcomeNone:
+			if isDefinitiveRPCFailure(payErr) {
+				return fmt.Errorf("%s failed: %w", op, payErr)
+			}
 		}
 	}
-
-	req := &clngrpc.XpayRequest{
-		Invstring:  payReq,
-		AmountMsat: amountMsat,
-	}
-
-	resp, err := g.client.Xpay(g.ctx, req)
-	if err != nil {
-		logger.Logger.WithError(err).Error("xpay failed")
-		return nil, fmt.Errorf("xpay failed: %w", err)
-	}
-
-	feePaidMsat := uint64(0)
-	if resp.AmountSentMsat != nil {
-		if resp.AmountMsat != nil {
-			feePaidMsat = resp.AmountSentMsat.Msat - resp.AmountMsat.Msat
-		}
-	}
-
-	return &lnclient.PayInvoiceResponse{
-		Preimage: hex.EncodeToString(resp.PaymentPreimage),
-		FeeMsat:  feePaidMsat,
-	}, err
+	g.trackPayment(tp)
+	return fmt.Errorf("%w: %v", lnclient.ErrPaymentPending, payErr)
 }
 
 func (g *GreenlightService) SendKeysend(amount uint64, destination string, customRecords []lnclient.TLVRecord, preimage string) (*lnclient.PayKeysendResponse, error) {
 	logger.Logger.WithFields(logrus.Fields{
-		"amount":        amount,
-		"destination":   destination,
-		"customRecords": customRecords,
-		"preimage":      preimage,
+		"amount":      amount,
+		"destination": destination,
 	}).Debug("Send Keysend")
 
 	Destination, err := hex.DecodeString(destination)
-	if err != nil {
-		logger.Logger.WithError(err).Error("Failed to decode payee pubkey")
-		return nil, err
+	if err != nil || len(Destination) != 33 {
+		return nil, fmt.Errorf("invalid keysend destination pubkey")
+	}
+	if amount == 0 || amount > maxAmountMsat {
+		return nil, fmt.Errorf("invalid keysend amount")
 	}
 
+	// label lets us find this exact keysend on the node even though CLN
+	// derives its own preimage/hash (the hub recorded a synthetic hash).
+	requestedHash := ""
+	if pre, err := hex.DecodeString(preimage); err == nil && len(pre) == 32 {
+		h := sha256.Sum256(pre)
+		requestedHash = hex.EncodeToString(h[:])
+	}
+	label := keysendLabelPrefix + requestedHash + "-" + uuid.NewString()[:8]
+	retryFor := uint32(payRetryForSeconds)
 	req := &clngrpc.KeysendRequest{
 		Destination: Destination,
 		AmountMsat:  &clngrpc.Amount{Msat: amount},
+		Label:       &label,
+		RetryFor:    &retryFor,
 	}
 
 	if len(customRecords) > 0 {
@@ -286,40 +311,31 @@ func (g *GreenlightService) SendKeysend(amount uint64, destination string, custo
 		for _, record := range customRecords {
 			valueBytes, err := hex.DecodeString(record.Value)
 			if err != nil {
-				return nil, fmt.Errorf("could not decode TLV value to bytes: %v", record.Value)
+				return nil, fmt.Errorf("could not decode TLV value to bytes")
 			}
-
-			entry := clngrpc.TlvEntry{
-				Type:  record.Type,
-				Value: valueBytes,
-			}
-
-			Extratlvs.Entries = append(Extratlvs.Entries, &entry)
+			Extratlvs.Entries = append(Extratlvs.Entries, &clngrpc.TlvEntry{Type: record.Type, Value: valueBytes})
 		}
 		req.Extratlvs = &Extratlvs
 	}
 
-	resp, err := g.client.KeySend(g.ctx, req)
+	ctx, cancel := context.WithTimeout(g.ctx, payRPCTimeout)
+	defer cancel()
+	resp, err := g.client.KeySend(ctx, req)
 	if err != nil {
-		logger.Logger.WithError(err).Error("keysend failed")
-		return nil, fmt.Errorf("keysend failed: %w", err)
+		tp := &trackedPayment{paymentHash: requestedHash, label: label, amountMsat: amount, started: time.Now(), requestedPaymentHash: requestedHash}
+		if requestedHash == "" {
+			tp.paymentHash = label
+		}
+		return nil, g.resolvePayError(err, tp, "keysend")
 	}
-
 	if resp == nil {
-		return nil, fmt.Errorf("empty keysend response")
-	}
-
-	feeMsat := uint64(0)
-
-	if resp.AmountSentMsat != nil && resp.AmountMsat != nil {
-		feeMsat = resp.AmountSentMsat.Msat - resp.AmountMsat.Msat
+		return nil, fmt.Errorf("%w: empty keysend response", lnclient.ErrPaymentPending)
 	}
 	// Greenlight (CLN-family) derives its own preimage server-side — the
 	// caller-supplied preimage cannot be honored via the gl-client, so
 	// report the actual preimage and payment hash from the response.
-	// Recording anything else would fake the proof-of-payment.
 	return &lnclient.PayKeysendResponse{
-		FeeMsat:     feeMsat,
+		FeeMsat:     feeOf(resp.AmountSentMsat, resp.AmountMsat),
 		Preimage:    hex.EncodeToString(resp.PaymentPreimage),
 		PaymentHash: hex.EncodeToString(resp.PaymentHash),
 	}, nil

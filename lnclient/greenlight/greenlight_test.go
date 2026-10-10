@@ -46,6 +46,10 @@ type mockNode struct {
 	keysendCh    chan []byte // raw IncomingPayment payloads pushed by tests
 	getinfoErr   error       // when set, Getinfo fails (simulates a wedged node)
 	receivable   *uint64     // when set, overrides mock inbound for JIT tests
+	xpayErr      error       // when set, Xpay fails with this error
+	keysendErr   error
+	pays         []*clngrpc.ListpaysPays
+	xpayCalls    int
 }
 
 func newMockNode() *mockNode {
@@ -91,6 +95,13 @@ func (m *mockNode) Decode(ctx context.Context, req *clngrpc.DecodeRequest) (*cln
 }
 
 func (m *mockNode) Xpay(ctx context.Context, req *clngrpc.XpayRequest) (*clngrpc.XpayResponse, error) {
+	m.mu.Lock()
+	m.xpayCalls++
+	xerr := m.xpayErr
+	m.mu.Unlock()
+	if xerr != nil {
+		return nil, xerr
+	}
 	preimage := []byte("mock-preimage-0123456789abcdef")
 	amount := uint64(1000)
 	if req.AmountMsat != nil {
@@ -103,7 +114,26 @@ func (m *mockNode) Xpay(ctx context.Context, req *clngrpc.XpayRequest) (*clngrpc
 	}, nil
 }
 
+func (m *mockNode) ListPays(ctx context.Context, req *clngrpc.ListpaysRequest) (*clngrpc.ListpaysResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []*clngrpc.ListpaysPays
+	for _, p := range m.pays {
+		if len(req.PaymentHash) > 0 && string(p.PaymentHash) != string(req.PaymentHash) {
+			continue
+		}
+		out = append(out, p)
+	}
+	return &clngrpc.ListpaysResponse{Pays: out}, nil
+}
+
 func (m *mockNode) KeySend(ctx context.Context, req *clngrpc.KeysendRequest) (*clngrpc.KeysendResponse, error) {
+	m.mu.Lock()
+	kerr := m.keysendErr
+	m.mu.Unlock()
+	if kerr != nil {
+		return nil, kerr
+	}
 	return &clngrpc.KeysendResponse{
 		PaymentPreimage: []byte("mock-keysend-preimage-1234567890"),
 		AmountMsat:      &clngrpc.Amount{Msat: req.AmountMsat.Msat},
@@ -560,7 +590,7 @@ func newTestServiceWithWorkDir(t *testing.T, node *mockNode, workDir string) (*G
 		cancel:  cancel,
 		client:  client,
 		conn:    conn,
-		config:  Config{},
+		config:  Config{Network: "testnet"},
 		workDir: workDir,
 	}
 
@@ -639,7 +669,7 @@ func TestSendPaymentSync(t *testing.T) {
 	svc, cleanup := newTestService(t, newMockNode())
 	defer cleanup()
 
-	resp, err := svc.SendPaymentSync("lnbc1000:deadbeef", nil)
+	resp, err := svc.SendPaymentSync(makeTestInvoice(t, testInvoiceOpts{amountMsat: 1000}), nil)
 	if err != nil {
 		t.Fatalf("SendPaymentSync failed: %v", err)
 	}
