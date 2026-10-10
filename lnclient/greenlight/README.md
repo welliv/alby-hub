@@ -96,3 +96,12 @@ your disk.
 
 [ARCHITECTURE.md](ARCHITECTURE.md) covers the integration design.
 [docs/RUNBOOK.md](docs/RUNBOOK.md) covers operations and troubleshooting.
+
+
+## Channel management
+
+Manual channel open/close use the hosted node's `FundChannel` / `Close`
+RPCs (same as the CLN backend). Verified on the local `gl-testserver`
+regtest bench. Signet/testnet require the peer to be reachable from
+Blockstream's infrastructure (local `127.0.0.1` peers will not work on
+hosted nodes).
