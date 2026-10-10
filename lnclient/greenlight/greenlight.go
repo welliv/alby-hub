@@ -1494,8 +1494,15 @@ func (g *GreenlightService) clnInvoiceToTransaction(ctx context.Context, invoice
 	}
 
 	var amountMsat int64
+	var lspFeeMsat int64
 	if invoice.Status == clngrpc.ListinvoicesInvoices_PAID && invoice.AmountReceivedMsat != nil {
 		amountMsat = int64(invoice.AmountReceivedMsat.Msat)
+		// LSPS2 JIT: the LSP skims its opening fee, so the node receives
+		// less than the invoice amount; report the skim as the fee (LDK
+		// reports CounterpartySkimmedFeeMsat the same way).
+		if invoice.AmountMsat != nil && invoice.AmountReceivedMsat.Msat < invoice.AmountMsat.Msat {
+			lspFeeMsat = int64(invoice.AmountMsat.Msat - invoice.AmountReceivedMsat.Msat)
+		}
 	} else if invoice.AmountMsat != nil {
 		amountMsat = int64(invoice.AmountMsat.Msat)
 	} else {
@@ -1563,7 +1570,7 @@ func (g *GreenlightService) clnInvoiceToTransaction(ctx context.Context, invoice
 		Preimage:        hex.EncodeToString(invoice.PaymentPreimage),
 		PaymentHash:     hex.EncodeToString(invoice.PaymentHash),
 		AmountMsat:      amountMsat,
-		FeesPaidMsat:    0,
+		FeesPaidMsat:    lspFeeMsat,
 		CreatedAt:       created_at,
 		ExpiresAt:       &expires_at,
 		SettledAt:       paid_at,

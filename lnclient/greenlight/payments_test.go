@@ -254,3 +254,25 @@ func hexOf(b []byte) string {
 	}
 	return string(out)
 }
+
+func TestPaidInvoiceFallbackWhenLookupFails(t *testing.T) {
+	node := newMockNode()
+	svc, cleanup := newTestService(t, node)
+	defer cleanup()
+	paidAt := uint64(time.Now().Unix())
+	resp := &clngrpc.WaitanyinvoiceResponse{
+		PaymentHash:        []byte("01234567890123456789012345678901"),
+		PaymentPreimage:    []byte("preimagepreimagepreimagepreimage"),
+		AmountMsat:         &clngrpc.Amount{Msat: 50_000_000},
+		AmountReceivedMsat: &clngrpc.Amount{Msat: 47_500_000},
+		PaidAt:             &paidAt,
+		Status:             clngrpc.WaitanyinvoiceResponse_PAID,
+	}
+	tx := svc.paidInvoiceTransaction(svc.ctx, resp) // keysend-style: not in listinvoices
+	if tx == nil {
+		t.Fatal("fallback must still produce a transaction so the payment is credited")
+	}
+	if tx.AmountMsat != 47_500_000 || tx.FeesPaidMsat != 2_500_000 {
+		t.Fatalf("amounts %d/%d", tx.AmountMsat, tx.FeesPaidMsat)
+	}
+}

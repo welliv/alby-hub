@@ -915,6 +915,23 @@ func (svc *transactionsService) ConsumeEvent(ctx context.Context, event *events.
 			return
 		}
 
+		// credit what the node actually received: on JIT/LSP invoices the
+		// LSP skims its opening fee, so the received amount is below the
+		// invoice amount. Crediting the invoice amount would over-credit
+		// isolated sub-wallets by the fee.
+		// Only applied when the backend reports the skim explicitly
+		// (received + fee == invoice amount), so other backends' events are
+		// unaffected.
+		if dbTransaction.State == constants.TRANSACTION_STATE_PENDING && lnClientTransaction.AmountMsat > 0 &&
+			lnClientTransaction.FeesPaidMsat > 0 &&
+			uint64(lnClientTransaction.AmountMsat+lnClientTransaction.FeesPaidMsat) == dbTransaction.AmountMsat {
+			if err := svc.db.Model(&dbTransaction).Update("amount_msat", uint64(lnClientTransaction.AmountMsat)).Error; err != nil {
+				logger.Logger.WithError(err).Error("Failed to update received amount")
+				return
+			}
+			dbTransaction.AmountMsat = uint64(lnClientTransaction.AmountMsat)
+		}
+
 		if _, err := svc.markTransactionSettled(&dbTransaction, lnClientTransaction.Preimage, uint64(lnClientTransaction.FeesPaidMsat), false); err != nil {
 			logger.Logger.WithFields(logrus.Fields{
 				"payment_hash": lnClientTransaction.PaymentHash,

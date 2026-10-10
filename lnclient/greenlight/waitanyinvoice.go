@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/getAlby/hub/events"
+	"github.com/getAlby/hub/lnclient"
 	"github.com/getAlby/hub/lnclient/cln/clngrpc"
 	"github.com/getAlby/hub/logger"
 	"github.com/sirupsen/logrus"
@@ -128,29 +129,33 @@ func (g *GreenlightService) waitForInvoices(ctx context.Context) {
 			continue
 		}
 
-		lastPayIndex = *resp.PayIndex
-		if err := g.savePumpState(lastPayIndex); err != nil {
-			logger.Logger.WithError(err).Error("Failed to persist pump state")
-		}
-
-		// Full transaction fidelity via the same mapping used by LookupInvoice:
-		// created_at comes from decoding the bolt11, description hash and
-		// offer metadata from the node's invoice record.
-		tx, err := g.LookupInvoice(ctx, hex.EncodeToString(resp.PaymentHash))
-		if err != nil {
-			logger.Logger.WithError(err).WithField("payment_hash", hex.EncodeToString(resp.PaymentHash)).Error("Failed to look up paid invoice")
+		// Publish FIRST, persist the cursor only after a successful
+		// publish: a crash or lookup failure must replay the invoice (the
+		// hub's payment_received handling is idempotent by payment hash),
+		// never silently skip it.
+		tx := g.paidInvoiceTransaction(ctx, resp)
+		if tx == nil {
+			// lookup and fallback both failed: do not advance; retry
+			if !backoff() {
+				return
+			}
 			continue
 		}
 
 		logger.Logger.WithFields(logrus.Fields{
-			"payment_hash": hex.EncodeToString(resp.PaymentHash),
-			"amount_msat":  resp.AmountReceivedMsat,
+			"payment_hash": tx.PaymentHash,
+			"amount_msat":  tx.AmountMsat,
 		}).Info("Invoice paid")
 
-		g.eventPublisher.Publish(&events.Event{
+		g.publish(&events.Event{
 			Event:      "nwc_lnclient_payment_received",
 			Properties: tx,
 		})
+
+		lastPayIndex = *resp.PayIndex
+		if err := g.savePumpState(lastPayIndex); err != nil {
+			logger.Logger.WithError(err).Error("Failed to persist pump state")
+		}
 	}
 }
 
@@ -179,4 +184,49 @@ func (g *GreenlightService) savePumpState(lastPayIndex uint64) error {
 		return err
 	}
 	return os.Rename(tmp, filepath.Join(g.workDir, pumpStateFile))
+}
+
+// paidInvoiceTransaction maps a paid waitanyinvoice result to a transaction,
+// retrying the full-fidelity lookup and falling back to the fields carried
+// by the waitanyinvoice response itself (keysend invoices have no bolt11 and
+// cannot be decoded, but must still be credited).
+func (g *GreenlightService) paidInvoiceTransaction(ctx context.Context, resp *clngrpc.WaitanyinvoiceResponse) *lnclient.Transaction {
+	hash := hex.EncodeToString(resp.PaymentHash)
+	for attempt := 0; attempt < 3; attempt++ {
+		tx, err := g.LookupInvoice(ctx, hash)
+		if err == nil {
+			return tx
+		}
+		logger.Logger.WithError(err).WithField("payment_hash", hash).Warn("Failed to look up paid invoice, retrying")
+		if !sleepOrDone(ctx, time.Duration(attempt+1)*time.Second) {
+			return nil
+		}
+	}
+	if len(resp.PaymentHash) == 0 || len(resp.PaymentPreimage) == 0 || resp.AmountReceivedMsat == nil {
+		return nil
+	}
+	now := time.Now().Unix()
+	settledAt := now
+	if resp.PaidAt != nil {
+		settledAt = int64(*resp.PaidAt)
+	}
+	tx := &lnclient.Transaction{
+		Type:        "incoming",
+		PaymentHash: hash,
+		Preimage:    hex.EncodeToString(resp.PaymentPreimage),
+		AmountMsat:  int64(resp.AmountReceivedMsat.Msat),
+		CreatedAt:   settledAt,
+		SettledAt:   &settledAt,
+		Metadata:    lnclient.Metadata{},
+	}
+	if resp.Bolt11 != nil {
+		tx.Invoice = *resp.Bolt11
+	}
+	if resp.Description != nil {
+		tx.Description = *resp.Description
+	}
+	if resp.AmountMsat != nil && resp.AmountReceivedMsat.Msat < resp.AmountMsat.Msat {
+		tx.FeesPaidMsat = int64(resp.AmountMsat.Msat - resp.AmountReceivedMsat.Msat)
+	}
+	return tx
 }
