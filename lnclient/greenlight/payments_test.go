@@ -192,7 +192,7 @@ func TestReconcileNoRecordFailsAfterWindow(t *testing.T) {
 	defer cleanup()
 	pub := &capturePublisher{}
 	svc.eventPublisher = pub
-	tp := &trackedPayment{paymentHash: "00" + string(make([]byte, 0)) + "11223344556677889900112233445566778899001122334455667788990011", started: time.Now()}
+	tp := &trackedPayment{PaymentHash: "00" + string(make([]byte, 0)) + "11223344556677889900112233445566778899001122334455667788990011", Started: time.Now()}
 	if svc.reconcileOnce(svc.ctx, tp, time.Now()) {
 		t.Fatal("must stay pending inside the window")
 	}
@@ -220,16 +220,16 @@ func TestKeysendAmbiguousTrackedByLabel(t *testing.T) {
 	for _, v := range svc.reconciler.tracked {
 		tp = v
 	}
-	if tp == nil || tp.label == "" {
+	if tp == nil || tp.Label == "" {
 		t.Fatal("keysend must be tracked by label")
 	}
 	sum := sha256.Sum256(pre)
-	if tp.requestedPaymentHash != hexOf(sum[:]) {
+	if tp.RequestedPaymentHash != hexOf(sum[:]) {
 		t.Fatal("requested hash must be sha256(preimage)")
 	}
 	real := []byte("real-hash-real-hash-real-hash-32")
 	node.mu.Lock()
-	node.pays = []*clngrpc.ListpaysPays{{PaymentHash: real, Label: &tp.label, Status: clngrpc.ListpaysPays_COMPLETE, Preimage: pre}}
+	node.pays = []*clngrpc.ListpaysPays{{PaymentHash: real, Label: &tp.Label, Status: clngrpc.ListpaysPays_COMPLETE, Preimage: pre}}
 	node.mu.Unlock()
 	if !svc.reconcileOnce(svc.ctx, tp, time.Now()) {
 		t.Fatal("expected final")
@@ -238,7 +238,7 @@ func TestKeysendAmbiguousTrackedByLabel(t *testing.T) {
 	if ev == nil {
 		t.Fatal("expected sent event")
 	}
-	if ev.Properties.(*lnclient.Transaction).Metadata[lnclient.MetadataRequestedPaymentHash] != tp.requestedPaymentHash {
+	if ev.Properties.(*lnclient.Transaction).Metadata[lnclient.MetadataRequestedPaymentHash] != tp.RequestedPaymentHash {
 		t.Fatal("event must carry the requested hash for remapping")
 	}
 }
@@ -285,5 +285,26 @@ func TestPaidInvoiceFallbackWhenLookupFails(t *testing.T) {
 	}
 	if tx.AmountMsat != 47_500_000 || tx.FeesPaidMsat != 2_500_000 {
 		t.Fatalf("amounts %d/%d", tx.AmountMsat, tx.FeesPaidMsat)
+	}
+}
+
+func TestTrackedPaymentsSurviveRestart(t *testing.T) {
+	node := newMockNode()
+	dir := t.TempDir()
+	svc, cleanup := newTestServiceWithWorkDir(t, node, dir)
+	svc.trackPayment(&trackedPayment{PaymentHash: "ab", Started: time.Now()})
+	cleanup()
+	svc2, cleanup2 := newTestServiceWithWorkDir(t, node, dir)
+	defer cleanup2()
+	svc2.loadTracked()
+	if _, ok := svc2.reconciler.tracked["ab"]; !ok {
+		t.Fatal("ambiguous payment must still be tracked after restart")
+	}
+	svc2.untrack("ab")
+	svc3, cleanup3 := newTestServiceWithWorkDir(t, node, dir)
+	defer cleanup3()
+	svc3.loadTracked()
+	if len(svc3.reconciler.tracked) != 0 {
+		t.Fatal("untracked payment must not come back")
 	}
 }

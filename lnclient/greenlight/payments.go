@@ -3,9 +3,12 @@ package greenlight
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -186,12 +189,12 @@ func feeOf(sent, amt *clngrpc.Amount) uint64 {
 
 // trackedPayment is an outgoing payment whose outcome is unknown.
 type trackedPayment struct {
-	paymentHash          string // hash the hub recorded
-	label                string // keysend: node label to find the pay by
-	invoice              string
-	amountMsat           uint64
-	started              time.Time
-	requestedPaymentHash string // keysend: synthetic hash recorded by the hub
+	PaymentHash          string    `json:"payment_hash"`    // hash the hub recorded
+	Label                string    `json:"label,omitempty"` // keysend: node label to find the pay by
+	Invoice              string    `json:"invoice,omitempty"`
+	AmountMsat           uint64    `json:"amount_msat"`
+	Started              time.Time `json:"started"`
+	RequestedPaymentHash string    `json:"requested_payment_hash,omitempty"` // keysend: synthetic hash recorded by the hub
 }
 
 type payReconciler struct {
@@ -205,30 +208,79 @@ func (g *GreenlightService) trackPayment(tp *trackedPayment) {
 	if g.reconciler.tracked == nil {
 		g.reconciler.tracked = map[string]*trackedPayment{}
 	}
-	g.reconciler.tracked[tp.paymentHash] = tp
+	g.reconciler.tracked[tp.PaymentHash] = tp
+	g.saveTrackedLocked()
+}
+
+const trackedPaymentsFile = "pending_payments.json"
+
+// The tracked set is persisted so an ambiguous payment with no node record
+// yet is still reconciled (and its budget eventually released or settled)
+// after a hub restart.
+func (g *GreenlightService) saveTrackedLocked() {
+	if g.workDir == "" {
+		return
+	}
+	list := make([]*trackedPayment, 0, len(g.reconciler.tracked))
+	for _, tp := range g.reconciler.tracked {
+		list = append(list, tp)
+	}
+	data, err := json.Marshal(list)
+	if err != nil {
+		return
+	}
+	p := filepath.Join(g.workDir, trackedPaymentsFile)
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		logger.Logger.WithError(err).Error("greenlight: failed to persist pending payments")
+		return
+	}
+	if err := os.Rename(tmp, p); err != nil {
+		logger.Logger.WithError(err).Error("greenlight: failed to persist pending payments")
+	}
+}
+
+func (g *GreenlightService) loadTracked() {
+	if g.workDir == "" {
+		return
+	}
+	data, err := os.ReadFile(filepath.Join(g.workDir, trackedPaymentsFile)) // #nosec G304 -- hub workdir
+	if err != nil {
+		return
+	}
+	var list []*trackedPayment
+	if json.Unmarshal(data, &list) != nil {
+		return
+	}
+	for _, tp := range list {
+		if tp != nil && tp.PaymentHash != "" {
+			g.trackPayment(tp)
+		}
+	}
 }
 
 func (g *GreenlightService) untrack(hash string) {
 	g.reconciler.mu.Lock()
 	delete(g.reconciler.tracked, hash)
+	g.saveTrackedLocked()
 	g.reconciler.mu.Unlock()
 }
 
 func (g *GreenlightService) listPaysFor(ctx context.Context, tp *trackedPayment) ([]*clngrpc.ListpaysPays, error) {
-	if tp.label != "" {
+	if tp.Label != "" {
 		resp, err := g.client.ListPays(ctx, &clngrpc.ListpaysRequest{})
 		if err != nil {
 			return nil, err
 		}
 		var out []*clngrpc.ListpaysPays
 		for _, p := range resp.Pays {
-			if p.Label != nil && *p.Label == tp.label {
+			if p.Label != nil && *p.Label == tp.Label {
 				out = append(out, p)
 			}
 		}
 		return out, nil
 	}
-	h, err := hex.DecodeString(tp.paymentHash)
+	h, err := hex.DecodeString(tp.PaymentHash)
 	if err != nil {
 		return nil, err
 	}
@@ -249,7 +301,7 @@ func (g *GreenlightService) publish(e *events.Event) {
 func (g *GreenlightService) reconcileOnce(ctx context.Context, tp *trackedPayment, now time.Time) bool {
 	pays, err := g.listPaysFor(ctx, tp)
 	if err != nil {
-		logger.Logger.WithError(err).WithField("payment_hash", tp.paymentHash).Debug("reconcile: listpays failed")
+		logger.Logger.WithError(err).WithField("payment_hash", tp.PaymentHash).Debug("reconcile: listpays failed")
 		return false
 	}
 	outcome, p := aggregatePays(pays)
@@ -261,7 +313,7 @@ func (g *GreenlightService) reconcileOnce(ctx context.Context, tp *trackedPaymen
 		g.publishPaymentFailed(tp, "payment failed (reconciled from node)")
 		return true
 	case outcomeNone:
-		if now.Sub(tp.started) > noRecordFailAfter {
+		if now.Sub(tp.Started) > noRecordFailAfter {
 			g.publishPaymentFailed(tp, "payment never reached the node")
 			return true
 		}
@@ -272,31 +324,31 @@ func (g *GreenlightService) reconcileOnce(ctx context.Context, tp *trackedPaymen
 func (g *GreenlightService) publishPaymentSent(tp *trackedPayment, p *clngrpc.ListpaysPays) {
 	tx := &lnclient.Transaction{
 		Type:         "outgoing",
-		Invoice:      tp.invoice,
+		Invoice:      tp.Invoice,
 		Preimage:     hex.EncodeToString(p.Preimage),
 		PaymentHash:  hex.EncodeToString(p.PaymentHash),
-		AmountMsat:   i64(tp.amountMsat),
+		AmountMsat:   i64(tp.AmountMsat),
 		FeesPaidMsat: i64(feeOf(p.AmountSentMsat, p.AmountMsat)),
 		Metadata:     lnclient.Metadata{},
 	}
 	if p.AmountMsat != nil {
 		tx.AmountMsat = i64(p.AmountMsat.Msat)
 	}
-	if tp.requestedPaymentHash != "" {
-		tx.Metadata[lnclient.MetadataRequestedPaymentHash] = tp.requestedPaymentHash
+	if tp.RequestedPaymentHash != "" {
+		tx.Metadata[lnclient.MetadataRequestedPaymentHash] = tp.RequestedPaymentHash
 	}
 	logger.Logger.WithFields(logrus.Fields{"payment_hash": tx.PaymentHash}).Info("greenlight: reconciled payment as sent")
 	g.publish(&events.Event{Event: "nwc_lnclient_payment_sent", Properties: tx})
 }
 
 func (g *GreenlightService) publishPaymentFailed(tp *trackedPayment, reason string) {
-	hash := tp.paymentHash
-	if tp.requestedPaymentHash != "" {
-		hash = tp.requestedPaymentHash
+	hash := tp.PaymentHash
+	if tp.RequestedPaymentHash != "" {
+		hash = tp.RequestedPaymentHash
 	}
 	logger.Logger.WithFields(logrus.Fields{"payment_hash": hash, "reason": reason}).Info("greenlight: reconciled payment as failed")
 	g.publish(&events.Event{Event: "nwc_lnclient_payment_failed", Properties: &lnclient.PaymentFailedEventProperties{
-		Transaction: &lnclient.Transaction{Type: "outgoing", PaymentHash: hash, Invoice: tp.invoice, AmountMsat: i64(tp.amountMsat)},
+		Transaction: &lnclient.Transaction{Type: "outgoing", PaymentHash: hash, Invoice: tp.Invoice, AmountMsat: i64(tp.AmountMsat)},
 		Reason:      reason,
 	}})
 }
@@ -305,6 +357,7 @@ func (g *GreenlightService) publishPaymentFailed(tp *trackedPayment, reason stri
 // startup replays recent node payment history so a hub crash mid-payment
 // (or an outage) cannot leave the hub's view diverged from the node.
 func (g *GreenlightService) runReconciler(ctx context.Context) {
+	g.loadTracked()
 	g.startupReconcile(ctx)
 	t := time.NewTicker(reconcileInterval)
 	defer t.Stop()
@@ -322,7 +375,7 @@ func (g *GreenlightService) runReconciler(ctx context.Context) {
 		g.reconciler.mu.Unlock()
 		for _, tp := range list {
 			if g.reconcileOnce(ctx, tp, time.Now()) {
-				g.untrack(tp.paymentHash)
+				g.untrack(tp.PaymentHash)
 			}
 		}
 	}
@@ -347,16 +400,16 @@ func (g *GreenlightService) startupReconcile(ctx context.Context) {
 		byHash[h] = append(byHash[h], p)
 	}
 	for h, pays := range byHash {
-		tp := &trackedPayment{paymentHash: h, started: time.Now()}
+		tp := &trackedPayment{PaymentHash: h, Started: time.Now()}
 		if pays[0].Bolt11 != nil {
-			tp.invoice = *pays[0].Bolt11
+			tp.Invoice = *pays[0].Bolt11
 		}
 		if pays[0].Label != nil {
 			if rh, ok := strings.CutPrefix(*pays[0].Label, keysendLabelPrefix); ok {
 				if i := strings.LastIndex(rh, "-"); i > 0 {
 					rh = rh[:i]
 				}
-				tp.requestedPaymentHash = rh
+				tp.RequestedPaymentHash = rh
 			}
 		}
 		outcome, p := aggregatePays(pays)

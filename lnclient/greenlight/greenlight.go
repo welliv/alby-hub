@@ -237,11 +237,11 @@ func (g *GreenlightService) SendPaymentSync(payReq string, amount *uint64) (*lnc
 			FeeMsat:  feeOf(resp.AmountSentMsat, resp.AmountMsat),
 		}, nil
 	}
-	tp := &trackedPayment{paymentHash: paymentHash, invoice: payReq, started: time.Now()}
+	tp := &trackedPayment{PaymentHash: paymentHash, Invoice: payReq, Started: time.Now()}
 	if inv.MilliSat != nil {
-		tp.amountMsat = uint64(*inv.MilliSat)
+		tp.AmountMsat = uint64(*inv.MilliSat)
 	} else if amount != nil {
-		tp.amountMsat = *amount
+		tp.AmountMsat = *amount
 	}
 	return nil, g.resolvePayError(err, tp, "xpay")
 }
@@ -251,7 +251,7 @@ func (g *GreenlightService) SendPaymentSync(payReq string, amount *uint64) (*lnc
 // only a definitive node-side failure with no pending/complete attempt is
 // reported as failure; everything else is ErrPaymentPending + tracking.
 func (g *GreenlightService) resolvePayError(payErr error, tp *trackedPayment, op string) error {
-	logger.Logger.WithError(payErr).WithField("payment_hash", tp.paymentHash).Warn(op + " returned an error, checking node payment records")
+	logger.Logger.WithError(payErr).WithField("payment_hash", tp.PaymentHash).Warn(op + " returned an error, checking node payment records")
 	ctx, cancel := context.WithTimeout(g.ctx, defaultRPCTimeout)
 	defer cancel()
 	pays, lerr := g.listPaysFor(ctx, tp)
@@ -322,9 +322,9 @@ func (g *GreenlightService) SendKeysend(amount uint64, destination string, custo
 	defer cancel()
 	resp, err := g.client.KeySend(ctx, req)
 	if err != nil {
-		tp := &trackedPayment{paymentHash: requestedHash, label: label, amountMsat: amount, started: time.Now(), requestedPaymentHash: requestedHash}
+		tp := &trackedPayment{PaymentHash: requestedHash, Label: label, AmountMsat: amount, Started: time.Now(), RequestedPaymentHash: requestedHash}
 		if requestedHash == "" {
-			tp.paymentHash = label
+			tp.PaymentHash = label
 		}
 		return nil, g.resolvePayError(err, tp, "keysend")
 	}
