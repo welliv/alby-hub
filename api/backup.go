@@ -100,7 +100,13 @@ func (api *api) CreateBackup(unlockPassword string, w io.Writer) error {
 	// Reset the routing data to decrease the LDK DB size
 	err = lnClient.ResetRouter("ALL")
 	if err != nil {
-		logger.Logger.WithError(err).Warn("ResetRouter failed during backup; continuing")
+		// Greenlight's hosted node owns the graph (no reset RPC): only that
+		// backend may skip it; every other backend keeps upstream behaviour.
+		if backendType, _ := api.cfg.Get("LNBackendType", ""); backendType != config.GreenlightBackendType {
+			logger.Logger.WithError(err).Error("Failed to reset router")
+			return fmt.Errorf("failed to reset router: %w", err)
+		}
+		logger.Logger.WithError(err).Warn("ResetRouter unsupported on Greenlight; continuing backup")
 	}
 	// Stop the app to ensure no new requests are processed.
 	err = api.svc.StopApp()
