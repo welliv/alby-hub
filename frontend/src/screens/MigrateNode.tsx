@@ -1,4 +1,4 @@
-import { InfoIcon, TriangleAlertIcon } from "lucide-react";
+import { DatabaseIcon, InfoIcon, TriangleAlertIcon } from "lucide-react";
 import React, { useState } from "react";
 import { useNavigate } from "react-router";
 import PasswordInput from "src/components/password/PasswordInput";
@@ -8,11 +8,17 @@ import { Button } from "src/components/ui/button";
 import { LinkButton } from "src/components/ui/custom/link-button";
 import { LoadingButton } from "src/components/ui/custom/loading-button";
 import { Label } from "src/components/ui/label";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "src/components/ui/tooltip";
+import { useInfo } from "src/hooks/useInfo";
 
 import { handleRequestError } from "src/utils/handleRequestError";
 import { isHttpMode } from "src/utils/isHttpMode";
 import { request } from "src/utils/request";
-import { useInfo } from "src/hooks/useInfo";
 
 export function MigrateNode() {
   const navigate = useNavigate();
@@ -76,9 +82,9 @@ export function MigrateNode() {
   return (
     <>
       <SettingsHeader
-        title="Download Hub backup"
-        pageTitle="Hub backup"
-        description="Move Alby Hub to another device. Your Lightning funds stay on the node backend (e.g. Greenlight) until you leave that backend."
+        title="Migrate Alby Hub"
+        pageTitle="Migrate"
+        description="Create migration file in order to move your Alby Hub to another device or server."
       />
 
       <div className="flex flex-col gap-6">
@@ -88,41 +94,59 @@ export function MigrateNode() {
             <h3>Do not run your Alby Hub on multiple devices</h3>
           </div>
           <p className="text-sm ml-7">
-            After creating this file, stop using Alby Hub on this device before
-            unlocking on the new one.
+            After creating this migration file, do not restart Alby Hub on this
+            device, as this will cause problems and may cause force channel
+            closures.
           </p>
         </div>
         <div className="flex flex-col gap-1">
           <div className="flex gap-3 items-center">
             <TriangleAlertIcon className="size-4" />
-            <h3>Restore only on a fresh Alby Hub</h3>
+            <h3>Migrate this file only to fresh Alby Hub</h3>
           </div>
           <p className="text-sm ml-7">
-            On the new device choose &quot;I already have a Hub&quot; then
-            &quot;Restore Hub backup&quot;.
+            To import the migration file, you must have a brand new Alby Hub on
+            another device and use the “Advanced” option during the onboarding.
+          </p>
+        </div>
+        <div className="flex flex-col gap-1">
+          <div className="flex gap-3 items-center">
+            <TriangleAlertIcon className="size-4" />
+            <h3>Never share your migration file</h3>
+          </div>
+          <p className="text-sm ml-7">
+            Anyone with this file and your unlock password can access your
+            funds. Never send it to anyone. Alby support will never ask for it.
           </p>
         </div>
         <div className="flex flex-col gap-1">
           <div className="flex gap-3 items-center">
             <InfoIcon className="size-4" />
-            <h3>What is included?</h3>
+            <h3>What happens next?</h3>
           </div>
           <p className="text-sm ml-7">
-            Encrypted Hub data: apps, settings, and keys. On Greenlight, channels
-            stay in the cloud; this file reconnects you to the same node.
+            After typing your unlock password, you'll be able to download a
+            migration file which contains a backup of your Alby Hub data. Then
+            you'll see instructions on how to import this migration file into
+            another device or server.
           </p>
         </div>
-        {info?.autoUnlockPasswordEnabled && (
-          <div className="flex flex-col gap-1">
-            <div className="flex gap-3 items-center">
-              <TriangleAlertIcon className="size-4 text-destructive" />
-              <h3>Disable Auto Unlock first</h3>
-            </div>
-            <p className="text-sm ml-7">
-              Hub backup is disabled while Auto Unlock is on. Disable it in
-              Settings → Auto Unlock, then come back here to download your
-              backup.
-            </p>
+        {info?.databaseType === "postgres" && (
+          <div className="flex gap-3 items-center">
+            <DatabaseIcon className="size-4" />
+            <h3>Your database will be migrated</h3>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger type="button">
+                  <InfoIcon className="size-4 shrink-0 text-muted-foreground" />
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs">
+                  The contents of your PostgreSQL database will be copied into a
+                  local SQLite database while the migration file is being
+                  created. Your new Alby Hub will use this SQLite database.
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           </div>
         )}
       </div>
@@ -131,7 +155,7 @@ export function MigrateNode() {
         <div>
           <h1 className="font-medium mb-1">Enter unlock password</h1>
           <p className="text-muted-foreground mb-4">
-            Your unlock password encrypts the backup file
+            Your unlock password will be used to encrypt your migration file
           </p>
           <form
             onSubmit={onSubmitPassword}
@@ -158,11 +182,11 @@ export function MigrateNode() {
             disabled={loading}
             onClick={() => setShowPasswordScreen(true)}
           >
-            Download Hub backup
+            Create Alby Hub Migration File
           </Button>
 
           <LinkButton to="/settings/backup" variant={"secondary"}>
-            Back to Backup
+            Backup Without Migrating Alby Hub
           </LinkButton>
         </div>
       )}

@@ -61,6 +61,7 @@ type LDKService struct {
 	lsps2InfoFetchedAt                 time.Time
 	lsps2MinPaymentSizeMsat            *uint64
 	lsps2MaxPaymentSizeMsat            *uint64
+	lsps2OpeningFeeParamsMenu          []ldk_node.Lsps2OpeningFeeParams
 	shuttingDown                       bool
 	eventHandlingMutex                 sync.Mutex
 }
@@ -68,6 +69,17 @@ type LDKService struct {
 const resetRouterKey = "ResetRouter"
 const maxInvoiceExpiry = 24 * time.Hour
 const lsps2InfoCacheTTL = 60 * time.Minute
+
+// cached opening fee params must be at most this old when used to derive the
+// maximum LSP fee for a new JIT channel invoice
+const lsps2FeeCapCacheTTL = 1 * time.Minute
+
+// absolute ceiling on the LSPS2 opening fee accepted for a JIT channel,
+// regardless of the fee menu the LSP advertises: the greater of a base amount
+// and a percentage of the payment, so small payments can absorb the fixed
+// cost of a channel open while larger payments cannot be overcharged.
+const lsps2MaxOpeningFeeBaseMsat = 5_000_000
+const lsps2MaxOpeningFeePercent = 10
 
 func NewLDKService(ctx context.Context, cfg config.Config, eventPublisher events.EventPublisher, mnemonic, workDir string, vssToken string, setStartupState func(startupState string), channelPeerSuggestions []alby.ChannelPeerSuggestion) (result lnclient.LNClient, err error) {
 	if mnemonic == "" || workDir == "" {
@@ -209,14 +221,13 @@ func NewLDKService(ctx context.Context, cfg config.Config, eventPublisher events
 			return nil, err
 		}
 		builder.SetChainSourceBitcoindRpc(cfg.GetEnv().LDKBitcoindRpcHost, uint16(port), cfg.GetEnv().LDKBitcoindRpcUser, cfg.GetEnv().LDKBitcoindRpcPassword)
+		// bitcoind has no address index, so address lookups still need an esplora or electrum server
+		logger.Logger.WithFields(logrus.Fields{
+			"esplora_url":  cfg.GetEnv().LDKEsploraServer,
+			"electrum_url": cfg.GetEnv().LDKElectrumServer,
+		}).Warn("Bitcoind chain source does not support address lookups, using alternate server for address lookups. Set LDK_ESPLORA_SERVER or LDK_ELECTRUM_SERVER to use your own")
 		chainSource = "bitcoind"
-	} else if cfg.GetEnv().LDKElectrumServer != "" {
-		builder.SetChainSourceElectrum(cfg.GetEnv().LDKElectrumServer, &ldk_node.ElectrumSyncConfig{
-			// turn off background sync - we manage syncs ourselves
-			BackgroundSyncConfig: nil,
-		})
-		chainSource = "electrum"
-	} else {
+	} else if cfg.GetEnv().LDKEsploraServer != "" {
 		logger.Logger.WithFields(logrus.Fields{
 			"esplora_url": cfg.GetEnv().LDKEsploraServer,
 		}).Info("Using LDK node esplora chain source")
@@ -225,6 +236,15 @@ func NewLDKService(ctx context.Context, cfg config.Config, eventPublisher events
 			BackgroundSyncConfig: nil,
 		})
 		chainSource = "esplora"
+	} else {
+		logger.Logger.WithFields(logrus.Fields{
+			"electrum_url": cfg.GetEnv().LDKElectrumServer,
+		}).Info("Using LDK node electrum chain source")
+		builder.SetChainSourceElectrum(cfg.GetEnv().LDKElectrumServer, &ldk_node.ElectrumSyncConfig{
+			// turn off background sync - we manage syncs ourselves
+			BackgroundSyncConfig: nil,
+		})
+		chainSource = "electrum"
 	}
 
 	if cfg.GetEnv().LDKGossipSource != "" {
@@ -635,7 +655,10 @@ func (ls *LDKService) SendPaymentSync(invoice string, amountMsat *uint64) (*lncl
 		case <-ls.ctx.Done():
 			return nil, ls.ctx.Err()
 
-		case ev := <-ldkEventSubscription:
+		case ev, ok := <-ldkEventSubscription:
+			if !ok {
+				return nil, errors.New("LDK event subscription closed (node shutting down)")
+			}
 			switch event := (*ev).(type) {
 			case ldk_node.EventPaymentSuccessful:
 				if event.PaymentHash != paymentHash {
@@ -719,7 +742,10 @@ func (ls *LDKService) SendKeysend(amountMsat uint64, destination string, custom_
 		select {
 		case <-ls.ctx.Done():
 			return nil, ls.ctx.Err()
-		case event := <-ldkEventSubscription:
+		case event, ok := <-ldkEventSubscription:
+			if !ok {
+				return nil, errors.New("LDK event subscription closed (node shutting down)")
+			}
 
 			eventPaymentSuccessful, isEventPaymentSuccessfulEvent := (*event).(ldk_node.EventPaymentSuccessful)
 			eventPaymentFailed, isEventPaymentFailedEvent := (*event).(ldk_node.EventPaymentFailed)
@@ -788,10 +814,10 @@ func (ls *LDKService) getMaxSpendable() uint64 {
 	return spendable
 }
 
-func (ls *LDKService) MakeInvoice(ctx context.Context, amountMsat int64, description string, descriptionHash string, expiry int64, throughNodePubkey *string) (transaction *lnclient.Transaction, err error) {
+func (ls *LDKService) MakeInvoice(ctx context.Context, amountMsat int64, description string, descriptionHash string, expirySeconds int64, throughNodePubkey *string) (transaction *lnclient.Transaction, err error) {
 
-	if time.Duration(expiry)*time.Second > maxInvoiceExpiry {
-		return nil, errors.New("expiry is too long")
+	if expirySeconds < 0 || expirySeconds > int64(maxInvoiceExpiry/time.Second) {
+		return nil, errors.New("invalid invoice expiry")
 	}
 
 	maxReceivable := ls.getMaxReceivable()
@@ -816,8 +842,8 @@ func (ls *LDKService) MakeInvoice(ctx context.Context, amountMsat int64, descrip
 		})
 	}
 
-	if expiry == 0 {
-		expiry = lnclient.DEFAULT_INVOICE_EXPIRY
+	if expirySeconds == 0 {
+		expirySeconds = lnclient.DEFAULT_INVOICE_EXPIRY
 	}
 
 	var descriptionType ldk_node.Bolt11InvoiceDescription
@@ -832,17 +858,19 @@ func (ls *LDKService) MakeInvoice(ctx context.Context, amountMsat int64, descrip
 
 	var invoiceObj *ldk_node.Bolt11Invoice
 	if isJitInvoice {
+		// cap the opening fee the LSP may deduct from the incoming payment
+		maxLspFeeLimitMsat := ls.getLsps2MaxTotalOpeningFeeMsat(uint64(amountMsat))
 		invoiceObj, err = ls.node.Bolt11Payment().ReceiveViaJitChannel(
 			uint64(amountMsat),
 			descriptionType,
-			uint32(expiry),
-			nil,
+			uint32(expirySeconds),
+			&maxLspFeeLimitMsat,
 		)
 	} else {
 		invoiceObj, err = ls.node.Bolt11Payment().Receive(
 			uint64(amountMsat),
 			descriptionType,
-			uint32(expiry),
+			uint32(expirySeconds),
 		)
 	}
 
@@ -1172,28 +1200,37 @@ func (ls *LDKService) OpenChannel(ctx context.Context, openChannelRequest *lncli
 	}).Info("Funded channel")
 
 	for start := time.Now(); time.Since(start) < time.Second*60; {
-		event := <-ldkEventSubscription
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ls.ctx.Done():
+			return nil, ls.ctx.Err()
+		case event, ok := <-ldkEventSubscription:
+			if !ok {
+				return nil, errors.New("LDK event subscription closed (node shutting down)")
+			}
 
-		channelPendingEvent, isChannelPendingEvent := (*event).(ldk_node.EventChannelPending)
-		channelClosedEvent, isChannelClosedEvent := (*event).(ldk_node.EventChannelClosed)
+			channelPendingEvent, isChannelPendingEvent := (*event).(ldk_node.EventChannelPending)
+			channelClosedEvent, isChannelClosedEvent := (*event).(ldk_node.EventChannelClosed)
 
-		if isChannelClosedEvent {
-			closureReason := ls.getChannelCloseReason(&channelClosedEvent)
-			logger.Logger.WithFields(logrus.Fields{
-				"event":  channelClosedEvent,
-				"reason": closureReason,
-			}).Info("Failed to open channel")
+			if isChannelClosedEvent {
+				closureReason := ls.getChannelCloseReason(&channelClosedEvent)
+				logger.Logger.WithFields(logrus.Fields{
+					"event":  channelClosedEvent,
+					"reason": closureReason,
+				}).Info("Failed to open channel")
 
-			return nil, fmt.Errorf("failed to open channel with %s: %s", foundPeer.NodeId, closureReason)
+				return nil, fmt.Errorf("failed to open channel with %s: %s", foundPeer.NodeId, closureReason)
+			}
+
+			if !isChannelPendingEvent {
+				continue
+			}
+
+			return &lnclient.OpenChannelResponse{
+				FundingTxId: channelPendingEvent.FundingTxo.Txid,
+			}, nil
 		}
-
-		if !isChannelPendingEvent {
-			continue
-		}
-
-		return &lnclient.OpenChannelResponse{
-			FundingTxId: channelPendingEvent.FundingTxo.Txid,
-		}, nil
 	}
 
 	return nil, errors.New("open channel timeout")
@@ -2037,11 +2074,8 @@ func (ls *LDKService) GetBalances(ctx context.Context, includeInactiveChannels b
 }
 
 func (ls *LDKService) GetStorageDir() (string, error) {
-	// Note: the below will return the path including the WORK_DIR which is harder to use,
-	// so for now we just return a hardcoded value.
-	// cfg := ls.node.Config()
-	// return cfg.StorageDirPath, nil
-	return "ldk/storage", nil
+	// holds the node storage as well as the static channel backups
+	return ls.workdir, nil
 }
 
 func (ls *LDKService) deleteOldLDKPayments() {
@@ -2442,9 +2476,9 @@ func (ls *LDKService) ExecuteCustomNodeCommand(ctx context.Context, command *lnc
 	return nil, lnclient.ErrUnknownCustomNodeCommand
 }
 
-func (ls *LDKService) MakeHoldInvoice(ctx context.Context, amountMsat int64, description string, descriptionHash string, expiry int64, paymentHash string, minCltvExpiryDelta *uint64) (*lnclient.Transaction, error) {
-	if time.Duration(expiry)*time.Second > maxInvoiceExpiry {
-		return nil, errors.New("expiry is too long")
+func (ls *LDKService) MakeHoldInvoice(ctx context.Context, amountMsat int64, description string, descriptionHash string, expirySeconds int64, paymentHash string, minCltvExpiryDelta *uint64) (*lnclient.Transaction, error) {
+	if expirySeconds < 0 || expirySeconds > int64(maxInvoiceExpiry/time.Second) {
+		return nil, errors.New("invalid invoice expiry")
 	}
 
 	maxReceivable := ls.getMaxReceivable()
@@ -2458,8 +2492,8 @@ func (ls *LDKService) MakeHoldInvoice(ctx context.Context, amountMsat int64, des
 		})
 	}
 
-	if expiry == 0 {
-		expiry = lnclient.DEFAULT_INVOICE_EXPIRY
+	if expirySeconds == 0 {
+		expirySeconds = lnclient.DEFAULT_INVOICE_EXPIRY
 	}
 
 	var descriptionType ldk_node.Bolt11InvoiceDescription
@@ -2493,7 +2527,7 @@ func (ls *LDKService) MakeHoldInvoice(ctx context.Context, amountMsat int64, des
 		invoiceObj, err = ls.node.Bolt11Payment().ReceiveForHashWithMinCltvExpiryDelta(
 			uint64(amountMsat),
 			descriptionType,
-			uint32(expiry),
+			uint32(expirySeconds),
 			ldkPaymentHash,
 			uint16(*minCltvExpiryDelta),
 		)
@@ -2501,7 +2535,7 @@ func (ls *LDKService) MakeHoldInvoice(ctx context.Context, amountMsat int64, des
 		invoiceObj, err = ls.node.Bolt11Payment().ReceiveForHash(
 			uint64(amountMsat),
 			descriptionType,
-			uint32(expiry),
+			uint32(expirySeconds),
 			ldkPaymentHash,
 		)
 	}
@@ -2647,13 +2681,13 @@ func (ls *LDKService) GetChainDataSource() (string, string) {
 		rpcPort := ls.cfg.GetEnv().LDKBitcoindRpcPort
 		return "bitcoind", sanitizeChainEndpoint(endpoint, rpcPort)
 	}
-	if endpoint := ls.cfg.GetEnv().LDKElectrumServer; endpoint != "" {
-		return "electrum", sanitizeChainEndpoint(endpoint, "")
+	if endpoint := ls.cfg.GetEnv().LDKEsploraServer; endpoint != "" {
+		return "esplora", sanitizeChainEndpoint(endpoint, "")
 	}
 
-	// Fallback to Esplora
-	endpoint := ls.cfg.GetEnv().LDKEsploraServer
-	return "esplora", sanitizeChainEndpoint(endpoint, "")
+	// Fallback to Electrum
+	endpoint := ls.cfg.GetEnv().LDKElectrumServer
+	return "electrum", sanitizeChainEndpoint(endpoint, "")
 }
 
 func (ls *LDKService) GetLiquiditySourceLsps2() string {
@@ -2664,16 +2698,36 @@ func (ls *LDKService) GetLiquiditySourceLsps2() string {
 }
 
 func (ls *LDKService) GetLiquiditySourceLsps2MinPaymentSizeMsat() *uint64 {
-	ls.fetchLsps2OpeningFeeParams()
+	ls.fetchLsps2OpeningFeeParams(lsps2InfoCacheTTL)
+
+	ls.lsps2InfoMu.Lock()
+	defer ls.lsps2InfoMu.Unlock()
+
 	return ls.lsps2MinPaymentSizeMsat
 }
 
 func (ls *LDKService) GetLiquiditySourceLsps2MaxPaymentSizeMsat() *uint64 {
-	ls.fetchLsps2OpeningFeeParams()
+	ls.fetchLsps2OpeningFeeParams(lsps2InfoCacheTTL)
+
+	ls.lsps2InfoMu.Lock()
+	defer ls.lsps2InfoMu.Unlock()
+
 	return ls.lsps2MaxPaymentSizeMsat
 }
 
-func (ls *LDKService) fetchLsps2OpeningFeeParams() {
+// getLsps2MaxTotalOpeningFeeMsat returns the maximum opening fee to accept
+// for a JIT channel invoice of the given payment size, derived from the
+// LSP's advertised opening fee menu and an absolute ceiling.
+func (ls *LDKService) getLsps2MaxTotalOpeningFeeMsat(paymentSizeMsat uint64) uint64 {
+	ls.fetchLsps2OpeningFeeParams(lsps2FeeCapCacheTTL)
+
+	ls.lsps2InfoMu.Lock()
+	defer ls.lsps2InfoMu.Unlock()
+
+	return computeLsps2MaxTotalOpeningFeeMsat(paymentSizeMsat, ls.lsps2OpeningFeeParamsMenu)
+}
+
+func (ls *LDKService) fetchLsps2OpeningFeeParams(maxCacheAge time.Duration) {
 	if ls.lsps2Pubkey == "" || ls.lsps2Address == "" {
 		return
 	}
@@ -2681,7 +2735,7 @@ func (ls *LDKService) fetchLsps2OpeningFeeParams() {
 	ls.lsps2InfoMu.Lock()
 	defer ls.lsps2InfoMu.Unlock()
 
-	if !ls.lsps2InfoFetchedAt.IsZero() && time.Since(ls.lsps2InfoFetchedAt) < lsps2InfoCacheTTL {
+	if !ls.lsps2InfoFetchedAt.IsZero() && time.Since(ls.lsps2InfoFetchedAt) < maxCacheAge {
 		return
 	}
 
@@ -2710,11 +2764,46 @@ func (ls *LDKService) fetchLsps2OpeningFeeParams() {
 
 	ls.lsps2MinPaymentSizeMsat = minPaymentSizeMsat
 	ls.lsps2MaxPaymentSizeMsat = maxPaymentSizeMsat
+	ls.lsps2OpeningFeeParamsMenu = response.OpeningFeeParamsMenu
 	ls.lsps2InfoFetchedAt = time.Now()
 }
 
+// computeLsps2MaxTotalOpeningFeeMsat returns the maximum LSPS2 opening fee to
+// accept for a payment of the given size: the highest fee the advertised fee
+// menu allows for that size, further limited by the absolute fee ceiling. The
+// ceiling alone is used when no menu entry covers the payment size.
+func computeLsps2MaxTotalOpeningFeeMsat(paymentSizeMsat uint64, menu []ldk_node.Lsps2OpeningFeeParams) uint64 {
+	maxAcceptableFeeMsat := lsps2MaxAcceptableOpeningFeeMsat(paymentSizeMsat)
+
+	var menuMaxFeeMsat *uint64
+	for _, params := range menu {
+		if paymentSizeMsat < params.MinPaymentSizeMsat || paymentSizeMsat > params.MaxPaymentSizeMsat {
+			continue
+		}
+		feeMsat := ldk_node.Lsps2ComputeOpeningFeeMsat(paymentSizeMsat, params)
+		if feeMsat == nil {
+			continue
+		}
+		if menuMaxFeeMsat == nil || *feeMsat > *menuMaxFeeMsat {
+			menuMaxFeeMsat = feeMsat
+		}
+	}
+
+	if menuMaxFeeMsat != nil && *menuMaxFeeMsat < maxAcceptableFeeMsat {
+		return *menuMaxFeeMsat
+	}
+	return maxAcceptableFeeMsat
+}
+
+// the absolute ceiling on the LSPS2 opening fee for a payment of the given
+// size, independent of the fees the LSP advertises
+func lsps2MaxAcceptableOpeningFeeMsat(paymentSizeMsat uint64) uint64 {
+	return max(lsps2MaxOpeningFeeBaseMsat, paymentSizeMsat/100*lsps2MaxOpeningFeePercent)
+}
+
 // finds the smallest incoming payment for which the user is left
-// with a usable amount after the LSP skims its LSPS2 opening fee.
+// with a usable amount after the LSP skims its LSPS2 opening fee and the fee
+// stays within the absolute fee ceiling applied when creating JIT invoices.
 func computeLsps2MinPaymentSizeMsat(params ldk_node.Lsps2OpeningFeeParams) (uint64, bool) {
 	// The smallest amount the user must net after the opening fee. We require a
 	// whole satoshi rather than a single millisat so the minimum payment size
@@ -2730,12 +2819,20 @@ func computeLsps2MinPaymentSizeMsat(params ldk_node.Lsps2OpeningFeeParams) (uint
 		}
 		// The incoming amount must exceed the opening fee by at least 1 sat,
 		// otherwise the user receives a sub-satoshi (effectively zero) amount
-		// after the LSP skims its fee.
-		if *openingFeeMsat+minNetReceiveMsat <= paymentSizeMsat {
+		// after the LSP skims its fee. The fee must also stay within the
+		// absolute fee ceiling, otherwise invoices of this size are rejected.
+		if *openingFeeMsat+minNetReceiveMsat <= paymentSizeMsat &&
+			*openingFeeMsat <= lsps2MaxAcceptableOpeningFeeMsat(paymentSizeMsat) {
 			return paymentSizeMsat, paymentSizeMsat <= params.MaxPaymentSizeMsat
 		}
 
 		nextPaymentSizeMsat := *openingFeeMsat + minNetReceiveMsat
+		if *openingFeeMsat > lsps2MaxOpeningFeeBaseMsat {
+			// the smallest payment size at which a fee this large stays within
+			// the percentage part of the ceiling
+			minSizeForFeeMsat := (*openingFeeMsat + lsps2MaxOpeningFeePercent - 1) / lsps2MaxOpeningFeePercent * 100
+			nextPaymentSizeMsat = max(nextPaymentSizeMsat, minSizeForFeeMsat)
+		}
 		if nextPaymentSizeMsat <= paymentSizeMsat || nextPaymentSizeMsat > params.MaxPaymentSizeMsat {
 			return 0, false
 		}

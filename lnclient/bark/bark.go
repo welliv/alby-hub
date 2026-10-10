@@ -20,6 +20,7 @@ import (
 	"github.com/getAlby/hub/lnclient"
 	"github.com/getAlby/hub/logger"
 	"github.com/getAlby/hub/nip47/notifications"
+	"github.com/getAlby/hub/version"
 )
 
 const (
@@ -126,9 +127,19 @@ func NewBarkService(ctx context.Context, eventPublisher events.EventPublisher, w
 	// Usually, you have two wait 2 blocks. You can set nb_min_round_confirmations=0 to make it go faster.
 	roundTxRequiredConfirmations := uint32(0)
 
+	// Identify ourselves to the Ark server, the server rejects any client identifier that is not a
+	// strict `<name>/<version>` with a lowercase name and a non-empty version, so untagged development
+	// builds report a placeholder version.
+	hubVersion := version.Tag
+	if hubVersion == "" {
+		hubVersion = "dev"
+	}
+	userAgent := "albyhub/" + hubVersion
+
 	cfg := bark.Config{
 		ServerAddress:                config.ServerAddress,
 		RoundTxRequiredConfirmations: &roundTxRequiredConfirmations,
+		UserAgent:                    &userAgent,
 	}
 	esploraAddress := config.EsploraAddress
 	if esploraAddress != "" {
@@ -666,8 +677,9 @@ func (bs *BarkService) Shutdown() error {
 			logger.Logger.Warn("Timed out waiting for Bark background loops to stop")
 		}
 	}
-	if err := bs.wallet.StopDaemon(); err != nil {
-		logger.Logger.WithError(err).Warn("Bark StopDaemon failed")
+	// Make sure we wait for the wallet to stop.
+	if err := bs.wallet.StopDaemonWait(); err != nil {
+		logger.Logger.WithError(err).Warn("Bark StopDaemonWait failed")
 	}
 	bs.wallet.Destroy()
 	return nil
@@ -927,23 +939,36 @@ func (bs *BarkService) executeCommandRecoveryReport() (*lnclient.CustomNodeComma
 	// wallet open that creates the wallet locally (e.g. when restoring from a
 	// recovery phrase on a new device). It is only available in the session
 	// that created the wallet; on subsequent starts no scan runs.
-	report := bs.wallet.RecoveryReport()
-	if report == nil {
+	switch status := bs.wallet.RecoveryStatus().(type) {
+	case bark.RecoveryStatusNotRun:
 		return &lnclient.CustomNodeCommandResponse{
 			Response: map[string]interface{}{
+				"status":  "not-run",
 				"message": "No recovery scan ran on this wallet start. A scan only runs when the wallet is first created, e.g. after restoring from a recovery phrase.",
 			},
 		}, nil
+	case bark.RecoveryStatusFailed:
+		return &lnclient.CustomNodeCommandResponse{
+			Response: map[string]interface{}{
+				"status":  "failed",
+				"message": "The recovery scan failed before it could produce a report, so some funds may not have been recovered yet. Restart the wallet to retry the scan.",
+				"error":   status.Message,
+			},
+		}, nil
+	case bark.RecoveryStatusCompleted:
+		report := status.Report
+		return &lnclient.CustomNodeCommandResponse{
+			Response: map[string]interface{}{
+				"status":     "completed",
+				"isComplete": report.IsComplete,
+				"recovered":  report.Recovered,
+				"skipped":    report.Skipped,
+				"foreign":    report.Foreign,
+				"failed":     report.Failed,
+				"exited":     report.Exited,
+			},
+		}, nil
+	default:
+		return nil, fmt.Errorf("unexpected recovery status: %T", status)
 	}
-
-	return &lnclient.CustomNodeCommandResponse{
-		Response: map[string]interface{}{
-			"isComplete": report.IsComplete,
-			"recovered":  report.Recovered,
-			"skipped":    report.Skipped,
-			"foreign":    report.Foreign,
-			"failed":     report.Failed,
-			"exited":     report.Exited,
-		},
-	}, nil
 }

@@ -7,9 +7,21 @@ import (
 	"github.com/getAlby/hub/logger"
 )
 
-func (svc *service) StopApp() {
-	// Stop Greenlight signer before cancelling app context so keys are
-	// only live while the hub is unlocked.
+func (svc *service) StopApp() error {
+	// do not allow stopping while a start or stop is already in progress
+	return svc.WithStartLock(func() error {
+		// check under the lock so an in-progress start reports busy
+		// rather than not started
+		if svc.lnClient == nil {
+			return ErrAppNotStarted
+		}
+		svc.stopAppInternal()
+		return nil
+	})
+}
+
+// stopAppInternal must be called while holding the start lock
+func (svc *service) stopAppInternal() {
 	if svc.glSigner != nil {
 		svc.glSigner.Stop()
 	}

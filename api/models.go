@@ -317,7 +317,9 @@ type InfoResponse struct {
 	Network                       string              `json:"network"`
 	EnableAdvancedSetup           bool                `json:"enableAdvancedSetup"`
 	LdkVssEnabled                 bool                `json:"ldkVssEnabled"`
+	LdkVssUrl                     string              `json:"ldkVssUrl"`
 	VssSupported                  bool                `json:"vssSupported"`
+	DatabaseType                  string              `json:"databaseType"`
 	StartupState                  string              `json:"startupState"`
 	StartupError                  string              `json:"startupError"`
 	StartupErrorTime              time.Time           `json:"startupErrorTime"`
@@ -336,6 +338,7 @@ type InfoResponse struct {
 	JitChannelsEnabled            bool                `json:"jitChannelsEnabled"`
 	HideUpdateBanner              bool                `json:"hideUpdateBanner"`
 	SupportsBolt12                bool                `json:"supportsBolt12"`
+	NodeMigrationFileCreated      bool                `json:"nodeMigrationFileCreated"`
 }
 
 type UpdateSettingsRequest struct {
