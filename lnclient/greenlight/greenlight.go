@@ -232,6 +232,13 @@ func (g *GreenlightService) SendPaymentSync(payReq string, amount *uint64) (*lnc
 		amountMsat = &clngrpc.Amount{Msat: *amount}
 	}
 	retryFor := uint32(payRetryForSeconds)
+	// DEV/regtest only: sleep before Xpay so signer-kill-mid-payment tests
+	// have a real window (GREENLIGHT_XPAY_PREDELAY_MS). Ignored otherwise.
+	if g.config.Network == "regtest" {
+		if ms, _ := strconv.Atoi(os.Getenv("GREENLIGHT_XPAY_PREDELAY_MS")); ms > 0 && ms <= 30000 {
+			time.Sleep(time.Duration(ms) * time.Millisecond)
+		}
+	}
 	ctx, cancel := context.WithTimeout(g.ctx, payRPCTimeout)
 	defer cancel()
 	resp, err := g.client.Xpay(ctx, &clngrpc.XpayRequest{Invstring: payReq, AmountMsat: amountMsat, RetryFor: &retryFor})
