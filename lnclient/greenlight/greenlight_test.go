@@ -961,8 +961,16 @@ func TestWaitAnyInvoicePump(t *testing.T) {
 		t.Errorf("expected 100000 msat, got %d", propTx.AmountMsat)
 	}
 
-	// state persisted so a restart resumes from this index
-	state, err := svc.loadPumpState()
+	// state persisted (after publish) so a restart resumes from this index
+	var state uint64
+	var err2 error
+	for i := 0; i < 50; i++ {
+		if state, err2 = svc.loadPumpState(); err2 == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	err = err2
 	if err != nil {
 		t.Fatalf("failed to load pump state: %v", err)
 	}
