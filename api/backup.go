@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"strings"
 	"time"
 
@@ -30,16 +29,29 @@ import (
 // backup file was created with.
 var zipMagic = []byte{'P', 'K', 0x03, 0x04}
 
-// backupCipher describes one of the cipher schemes used for backup files,
-// which are laid out as salt || iv || encrypted zip archive.
+// backupCipher describes one of the cipher schemes used for backup files.
+// Stream (CTR/OFB) layout: salt || iv || ciphertext  (unauthenticated).
+// AEAD (GCM) layout:       salt || nonce || ciphertext||tag, AAD = salt.
 type backupCipher struct {
 	saltSize  int
+	nonceSize int // 0 means aes.BlockSize for stream IVs
 	deriveKey func(password string, salt []byte) ([]byte, error)
-	newStream func(block cipher.Block, iv []byte) cipher.Stream
+	newStream func(block cipher.Block, iv []byte) cipher.Stream // nil when aead
+	aead      bool
 }
 
 var backupCiphers = []backupCipher{
-	// current scheme, used for all new backup files
+	// v3: AES-256-GCM — authenticated; used for all newly created backups.
+	{
+		saltSize:  32,
+		nonceSize: 12,
+		deriveKey: func(password string, salt []byte) ([]byte, error) {
+			key, _, err := config.DeriveKey(password, salt)
+			return key, err
+		},
+		aead: true,
+	},
+	// v2: AES-CTR — still accepted on import (pre-AEAD hubs)
 	{
 		saltSize: 32,
 		deriveKey: func(password string, salt []byte) ([]byte, error) {
@@ -48,7 +60,7 @@ var backupCiphers = []backupCipher{
 		},
 		newStream: cipher.NewCTR,
 	},
-	// legacy scheme, kept to restore backup files created by older versions
+	// v1 legacy OFB — restore only
 	{
 		saltSize: 8,
 		deriveKey: func(password string, salt []byte) ([]byte, error) {
@@ -226,7 +238,10 @@ func (api *api) CreateBackup(unlockPassword string, w io.Writer) error {
 	}
 
 	zw := zip.NewWriter(cw)
-	defer zw.Close()
+	defer func() {
+		_ = zw.Close()
+		_ = cw.Close() // flush GCM tag (no-op for stream ciphers)
+	}()
 
 	addFileToZip := func(fsPath, zipPath string) error {
 		inF, err := os.Open(fsPath)
@@ -421,7 +436,24 @@ func (api *api) RestoreBackup(unlockPassword string, r io.Reader) error {
 	return nil
 }
 
-func encryptingWriter(w io.Writer, password string) (io.Writer, error) {
+// gcmBufferingWriter buffers the plaintext zip and Seals it on Close.
+type gcmBufferingWriter struct {
+	buf   bytes.Buffer
+	w     io.Writer
+	aead  cipher.AEAD
+	nonce []byte
+	salt  []byte // also used as AAD
+}
+
+func (g *gcmBufferingWriter) Write(p []byte) (int, error) { return g.buf.Write(p) }
+
+func (g *gcmBufferingWriter) Close() error {
+	ct := g.aead.Seal(nil, g.nonce, g.buf.Bytes(), g.salt)
+	_, err := g.w.Write(ct)
+	return err
+}
+
+func encryptingWriter(w io.Writer, password string) (io.WriteCloser, error) {
 	scheme := backupCiphers[0]
 
 	salt := make([]byte, scheme.saltSize)
@@ -438,84 +470,98 @@ func encryptingWriter(w io.Writer, password string) (io.Writer, error) {
 		return nil, fmt.Errorf("failed to create AES cipher: %w", err)
 	}
 
+	if _, err = w.Write(salt); err != nil {
+		return nil, fmt.Errorf("failed to write salt: %w", err)
+	}
+
+	if scheme.aead {
+		aead, err := cipher.NewGCM(block)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create GCM: %w", err)
+		}
+		ns := scheme.nonceSize
+		if ns == 0 {
+			ns = aead.NonceSize()
+		}
+		nonce := make([]byte, ns)
+		if _, err = rand.Read(nonce); err != nil {
+			return nil, fmt.Errorf("failed to generate nonce: %w", err)
+		}
+		if _, err = w.Write(nonce); err != nil {
+			return nil, fmt.Errorf("failed to write nonce: %w", err)
+		}
+		return &gcmBufferingWriter{w: w, aead: aead, nonce: nonce, salt: salt}, nil
+	}
+
 	iv := make([]byte, aes.BlockSize)
 	if _, err = rand.Read(iv); err != nil {
 		return nil, fmt.Errorf("failed to generate IV: %w", err)
 	}
-
-	_, err = w.Write(salt)
-	if err != nil {
-		return nil, fmt.Errorf("failed to write salt: %w", err)
-	}
-
-	_, err = w.Write(iv)
-	if err != nil {
+	if _, err = w.Write(iv); err != nil {
 		return nil, fmt.Errorf("failed to write IV: %w", err)
 	}
-
-	cw := &cipher.StreamWriter{
-		S: scheme.newStream(block, iv),
-		W: w,
-	}
-
-	return cw, nil
+	return &nopCloser{Writer: &cipher.StreamWriter{S: scheme.newStream(block, iv), W: w}}, nil
 }
 
+type nopCloser struct{ io.Writer }
+
+func (nopCloser) Close() error { return nil }
+
 func decryptingReader(r io.Reader, password string) (io.Reader, error) {
-	// Read the largest possible header (salt, IV and the first bytes of the
-	// archive) upfront, then trial-decrypt with each supported cipher scheme
-	// and pick the one that produces the ZIP signature.
-	maxHeaderSize := 0
-	minHeaderSize := math.MaxInt
-	for _, scheme := range backupCiphers {
-		headerSize := scheme.saltSize + aes.BlockSize + len(zipMagic)
-		maxHeaderSize = max(maxHeaderSize, headerSize)
-		minHeaderSize = min(minHeaderSize, headerSize)
+	// Read the whole ciphertext: AEAD needs the tag; stream schemes still
+	// work because we trial-decrypt prefixes against the ZIP magic.
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read backup: %w", err)
 	}
 
-	// Read the full header with io.ReadFull rather than io.ReadAtLeast: the
-	// reader may deliver short reads (e.g. a network request body), and
-	// stopping early could truncate the header of a scheme with a larger
-	// salt. A short file is only acceptable if it still covers the smallest
-	// scheme header.
-	header := make([]byte, maxHeaderSize)
-	n, err := io.ReadFull(r, header)
-	if err != nil && !(errors.Is(err, io.ErrUnexpectedEOF) && n >= minHeaderSize) {
-		return nil, fmt.Errorf("failed to read backup header: %w", err)
-	}
-	header = header[:n]
-
 	for _, scheme := range backupCiphers {
-		if len(header) < scheme.saltSize+aes.BlockSize+len(zipMagic) {
+		nonceSize := scheme.nonceSize
+		if nonceSize == 0 {
+			nonceSize = aes.BlockSize
+		}
+		minLen := scheme.saltSize + nonceSize + len(zipMagic)
+		if scheme.aead {
+			minLen += 16 // GCM tag
+		}
+		if len(raw) < minLen {
 			continue
 		}
-		salt := header[:scheme.saltSize]
-		iv := header[scheme.saltSize : scheme.saltSize+aes.BlockSize]
-		encrypted := header[scheme.saltSize+aes.BlockSize:]
+		salt := raw[:scheme.saltSize]
+		nonce := raw[scheme.saltSize : scheme.saltSize+nonceSize]
+		body := raw[scheme.saltSize+nonceSize:]
 
 		encKey, err := scheme.deriveKey(password, salt)
 		if err != nil {
 			return nil, fmt.Errorf("failed to derive encryption key: %w", err)
 		}
-
 		block, err := aes.NewCipher(encKey)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create AES cipher: %w", err)
 		}
 
-		stream := scheme.newStream(block, iv)
-		decrypted := make([]byte, len(encrypted))
-		stream.XORKeyStream(decrypted, encrypted)
-		if !bytes.Equal(decrypted[:len(zipMagic)], zipMagic) {
+		if scheme.aead {
+			aead, err := cipher.NewGCMWithNonceSize(block, nonceSize)
+			if err != nil {
+				continue
+			}
+			plain, err := aead.Open(nil, nonce, body, salt)
+			if err != nil {
+				continue // wrong password or not this scheme
+			}
+			if len(plain) < len(zipMagic) || !bytes.Equal(plain[:len(zipMagic)], zipMagic) {
+				continue
+			}
+			return bytes.NewReader(plain), nil
+		}
+
+		stream := scheme.newStream(block, nonce)
+		plain := make([]byte, len(body))
+		stream.XORKeyStream(plain, body)
+		if len(plain) < len(zipMagic) || !bytes.Equal(plain[:len(zipMagic)], zipMagic) {
 			continue
 		}
-
-		cr := &cipher.StreamReader{
-			S: stream,
-			R: r,
-		}
-
-		return io.MultiReader(bytes.NewReader(decrypted), cr), nil
+		return bytes.NewReader(plain), nil
 	}
 
 	return nil, errors.New("invalid unlock password or backup file")

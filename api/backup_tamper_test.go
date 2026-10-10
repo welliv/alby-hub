@@ -1,21 +1,27 @@
 package api
 
-// Adversarial: the backup format is AES-CTR (legacy OFB) with NO MAC. This
-// test documents what an attacker WITHOUT the password can do to a backup
-// file: XOR-patch any byte whose plaintext they can predict. The zip central
-// directory (file names, fixed layout from the known file list) is
-// predictable, so entries can be renamed/hidden undetected. Deflated file
-// bodies are not predictable, and zip CRC32 catches blind flips there.
-// Upstream-wide issue (all backends); recommended fix: AEAD v3 scheme.
+// With AES-GCM (v3) encryptingWriter, ciphertext tampering must be rejected.
+// Pre-AEAD CTR/OFB backups remain importable but are unauthenticated — see
+// TestBackupStillImportsLegacyCTR and the evidence pack.
 
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
 	"io"
 	"testing"
 )
 
-func TestBackupTamperingRenamesEntryUndetected_KnownIssue(t *testing.T) {
+func mustAES(key []byte) cipher.Block {
+	b, err := aes.NewCipher(key)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+func TestBackupTamperingRejectedWithAEAD(t *testing.T) {
 	var plain bytes.Buffer
 	zw := zip.NewWriter(&plain)
 	for _, n := range []string{"nwc.db", "greenlight/device-creds/ca.pem"} {
@@ -29,33 +35,66 @@ func TestBackupTamperingRenamesEntryUndetected_KnownIssue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _ = ew.Write(plain.Bytes())
-
-	// attacker: knows the layout, not the password or key
-	ct := enc.Bytes()
-	hdr := 32 + 16 // salt + iv (current scheme)
-	p := plain.Bytes()
-	for i := 0; i+6 <= len(p); i++ {
-		if bytes.Equal(p[i:i+6], []byte("nwc.db")) && (i == 30 || i > len(p)-200) { // local + central name
-			ct[hdr+i+5] ^= 'b' ^ 'x' // "nwc.db" -> "nwc.dx"
-		}
+	if _, err := ew.Write(plain.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := ew.Close(); err != nil {
+		t.Fatal(err)
 	}
 
+	ct := append([]byte(nil), enc.Bytes()...)
+	// Flip a byte in the ciphertext body (past salt+nonce).
+	if len(ct) < 64 {
+		t.Fatal("ciphertext too short")
+	}
+	ct[len(ct)/2] ^= 0x5a
+
+	if _, err := decryptingReader(bytes.NewReader(ct), "correct horse"); err == nil {
+		// If decrypt somehow succeeded, ensure zip contents weren't silently renamed.
+		t.Fatal("AEAD must reject tampered backup")
+	}
+}
+
+func TestBackupTamperingRenamesEntryUndetected_KnownIssue(t *testing.T) {
+	// Documents the pre-AEAD CTR malleability using backupCiphers[1] directly.
+	scheme := backupCiphers[1]
+	var plain bytes.Buffer
+	zw := zip.NewWriter(&plain)
+	for _, n := range []string{"nwc.db", "ca.pem"} {
+		w, _ := zw.Create(n)
+		_, _ = w.Write(bytes.Repeat([]byte(n), 50))
+	}
+	_ = zw.Close()
+
+	salt := bytes.Repeat([]byte{9}, scheme.saltSize)
+	iv := bytes.Repeat([]byte{8}, 16)
+	key, _ := scheme.deriveKey("correct horse", salt)
+	block := mustAES(key)
+	var enc bytes.Buffer
+	_, _ = enc.Write(salt)
+	_, _ = enc.Write(iv)
+	sw := &cipher.StreamWriter{S: scheme.newStream(block, iv), W: &enc}
+	_, _ = sw.Write(plain.Bytes())
+
+	ct := enc.Bytes()
+	hdr := scheme.saltSize + 16
+	p := plain.Bytes()
+	for i := 0; i+6 <= len(p); i++ {
+		if bytes.Equal(p[i:i+6], []byte("nwc.db")) && (i == 30 || i > len(p)-200) {
+			ct[hdr+i+5] ^= 'b' ^ 'x'
+		}
+	}
 	r, err := decryptingReader(bytes.NewReader(ct), "correct horse")
 	if err != nil {
-		t.Fatalf("tampered file rejected at decrypt (good, but unexpected): %v", err)
+		t.Fatalf("CTR legacy should still decrypt: %v", err)
 	}
 	out, _ := io.ReadAll(r)
 	zr, err := zip.NewReader(bytes.NewReader(out), int64(len(out)))
 	if err != nil {
-		t.Fatalf("zip rejected tampering: %v", err)
+		t.Fatal(err)
 	}
-	names := []string{}
-	for _, f := range zr.File {
-		names = append(names, f.Name)
+	if zr.File[0].Name != "nwc.dx" {
+		t.Fatalf("expected documented CTR malleability, got %q", zr.File[0].Name)
 	}
-	if names[0] != "nwc.dx" {
-		t.Fatalf("tamper did not take effect: %v", names)
-	}
-	t.Logf("KNOWN ISSUE: unauthenticated backup accepted with renamed entry: %v (nwc.db would be silently dropped from restore)", names)
+	t.Log("KNOWN ISSUE (legacy CTR only): entry rename undetected; new backups use AEAD")
 }
