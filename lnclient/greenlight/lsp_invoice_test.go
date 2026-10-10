@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
@@ -124,4 +127,14 @@ func decodeLspInvoiceRequest(t *testing.T, data []byte) (amount uint64, desc, la
 		}
 	}
 	return
+}
+
+func TestIsNodeUnreachable(t *testing.T) {
+	if !isNodeUnreachable(status.Error(codes.Unavailable, "dial tcp: connection refused")) ||
+		!isNodeUnreachable(status.Error(codes.DeadlineExceeded, "x")) {
+		t.Fatal("transport failures must be classified unreachable")
+	}
+	if isNodeUnreachable(nil) || isNodeUnreachable(status.Error(codes.NotFound, "no LSP peer")) {
+		t.Fatal("LSP/application errors are not unreachable")
+	}
 }

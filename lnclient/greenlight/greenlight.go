@@ -23,7 +23,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/status"
 
 	"github.com/getAlby/hub/events"
 	"github.com/getAlby/hub/lnclient"
@@ -423,6 +425,11 @@ func (g *GreenlightService) MakeInvoice(ctx context.Context, amountMsat int64, d
 				}, nil
 			}
 			logJitFallback(jitErr, amountMsat, inbound)
+			// Node unreachable: say so instead of blaming liquidity
+			// (inbound reads as 0 when ListPeerChannels itself failed).
+			if isNodeUnreachable(jitErr) {
+				return nil, fmt.Errorf("greenlight node unreachable, cannot create invoice: %w", jitErr)
+			}
 			if g.eventPublisher != nil {
 				g.eventPublisher.Publish(&events.Event{
 					Event: "nwc_incoming_liquidity_required",
@@ -1756,4 +1763,11 @@ func lspErrorReason(err error) string {
 		msg = msg[:200]
 	}
 	return msg
+}
+
+// isNodeUnreachable reports a transport-level failure to reach the hosted
+// node (as opposed to an application error from the node/LSP).
+func isNodeUnreachable(err error) bool {
+	c := status.Code(err)
+	return err != nil && (c == codes.Unavailable || c == codes.DeadlineExceeded)
 }
