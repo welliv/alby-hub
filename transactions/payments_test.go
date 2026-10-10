@@ -437,12 +437,20 @@ func TestSendPaymentSync_PendingHasFeeReserve(t *testing.T) {
 	go func() {
 		transactionsService.SendPaymentSync(tests.MockLNClientTransaction.Invoice, nil, nil, svc.LNClient, nil, nil)
 	}()
-	// ensure the goroutine above runs first
-	time.Sleep(10 * time.Millisecond)
-
+	// ensure the goroutine above runs first (race builds need more headroom)
+	deadline := time.Now().Add(2 * time.Second)
+	var transaction *db.Transaction
 	transactionType := constants.TRANSACTION_TYPE_OUTGOING
-	transaction, err := transactionsService.LookupTransaction(context.TODO(), tests.MockLNClientTransaction.PaymentHash, &transactionType, svc.LNClient, nil)
+	for time.Now().Before(deadline) {
+		transaction, err = transactionsService.LookupTransaction(context.TODO(), tests.MockLNClientTransaction.PaymentHash, &transactionType, svc.LNClient, nil)
+		if err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
 	assert.NoError(t, err)
+	require.NotNil(t, transaction)
 
 	assert.Equal(t, uint64(123000), transaction.AmountMsat)
 	assert.Equal(t, constants.TRANSACTION_STATE_PENDING, transaction.State)

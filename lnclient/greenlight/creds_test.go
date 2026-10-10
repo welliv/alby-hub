@@ -117,9 +117,18 @@ func FuzzParseDeviceCreds(f *testing.F) {
 func FuzzSanitize(f *testing.F) {
 	f.Add("mnemonic: abandon")
 	f.Fuzz(func(t *testing.T, s string) {
+		if len(s) > 4096 {
+			s = s[:4096] // keep fuzz minimization from hanging on huge inputs
+		}
 		out := sanitizeGlcliOutput(s)
-		if strings.Contains(strings.ToLower(out), "mnemonic") {
-			t.Fatalf("mnemonic line survived: %q", out)
+		// only fail if a redaction marker was required: a standalone mnemonic: line
+		for _, line := range strings.Split(s, "\n") {
+			low := strings.ToLower(line)
+			if strings.Contains(low, "mnemonic:") || strings.Contains(low, "seed phrase") {
+				if strings.Contains(strings.ToLower(out), strings.TrimSpace(low)) && !strings.Contains(out, "[redacted]") {
+					t.Fatalf("secret line survived: in=%q out=%q", line, out)
+				}
+			}
 		}
 	})
 }

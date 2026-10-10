@@ -14,6 +14,9 @@ var reSecretLine = regexp.MustCompile(`(?im)^.*(mnemonic|seed phrase|hsm_secret 
 // or returned in an error: lines mentioning a mnemonic, and any run of 12+
 // consecutive BIP39 words anywhere in the text.
 func sanitizeGlcliOutput(s string) string {
+	if len(s) > 1<<20 {
+		s = s[:1<<20]
+	}
 	s = reSecretLine.ReplaceAllString(s, "[redacted]")
 	lines := strings.Split(s, "\n")
 	words := bip39.GetWordList()
