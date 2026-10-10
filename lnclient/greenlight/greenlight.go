@@ -391,6 +391,10 @@ func (g *GreenlightService) MakeInvoice(ctx context.Context, amountMsat int64, d
 		deschashonly = true
 	}
 
+	if err := validateInvoiceDescription(description, deschashonly); err != nil {
+		return nil, err
+	}
+
 	if expiry == 0 {
 		expiry = lnclient.DEFAULT_INVOICE_EXPIRY
 	}
@@ -1819,4 +1823,22 @@ func decodePubkey(s string) ([]byte, error) {
 		return nil, fmt.Errorf("invalid node pubkey %q", s)
 	}
 	return b, nil
+}
+
+// maxBolt11DescriptionBytes is the largest description CLN will embed in a
+// bolt11 (`d` field); longer ones must use description_hash.
+const maxBolt11DescriptionBytes = 639
+
+// validateInvoiceDescription turns CLN's opaque -32602 "Internal" failures
+// into clear client errors (seen on the regtest bench via NWC make_invoice).
+func validateInvoiceDescription(description string, hashOnly bool) error {
+	for _, r := range description {
+		if (r < 0x20 && r != '\n' && r != '\r' && r != '\t') || r == 0x7f {
+			return fmt.Errorf("invoice description contains control characters")
+		}
+	}
+	if !hashOnly && len(description) > maxBolt11DescriptionBytes {
+		return fmt.Errorf("invoice description too long: %d bytes (max %d, use description_hash)", len(description), maxBolt11DescriptionBytes)
+	}
+	return nil
 }

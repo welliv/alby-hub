@@ -160,3 +160,20 @@ func TestNetworkGraphEmptyNodeIdNeverReachesNode(t *testing.T) {
 		t.Fatal("empty node id must be rejected locally")
 	}
 }
+
+func TestValidateInvoiceDescription(t *testing.T) {
+	ok := []string{"", "coffee ☕", "multi\nline\ttab", "'; DROP TABLE apps;-- \u202e<script>x</script> $(id)"}
+	for _, d := range ok {
+		if err := validateInvoiceDescription(d, false); err != nil {
+			t.Fatalf("%q rejected: %v", d, err)
+		}
+	}
+	for _, d := range []string{"nul\x00byte", "bell\x07", "del\x7f", strings.Repeat("A", 640)} {
+		if err := validateInvoiceDescription(d, false); err == nil {
+			t.Fatalf("%q accepted", d)
+		}
+	}
+	if err := validateInvoiceDescription(strings.Repeat("A", 5000), true); err != nil {
+		t.Fatalf("long description with description_hash must be allowed: %v", err)
+	}
+}
