@@ -462,6 +462,24 @@ func (g *GreenlightService) MakeInvoice(ctx context.Context, amountMsat int64, d
 
 	Exposeprivatechannels := []string{}
 
+	if throughNodePubkey == nil {
+		// Live testnet: CLN on Greenlight added no route hints for the
+		// node's private channels, making regular invoices unpayable
+		// ("Unknown destination node"). Expose all usable private channels.
+		if lpc, err := g.client.ListPeerChannels(ctx, &clngrpc.ListpeerchannelsRequest{}); err == nil {
+			for _, ch := range lpc.Channels {
+				if ch == nil || ch.State != clngrpc.ChannelState_ChanneldNormal || !ch.PeerConnected {
+					continue
+				}
+				if ch.ShortChannelId != nil {
+					Exposeprivatechannels = append(Exposeprivatechannels, *ch.ShortChannelId)
+				} else if ch.Alias != nil && ch.Alias.Remote != nil {
+					Exposeprivatechannels = append(Exposeprivatechannels, *ch.Alias.Remote)
+				}
+			}
+		}
+	}
+
 	if throughNodePubkey != nil {
 		throughNodePubkeyBytes, err := hex.DecodeString(*throughNodePubkey)
 		if err != nil {
