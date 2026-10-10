@@ -241,6 +241,7 @@ func TestRestoreBackupRejectsPathTraversal(t *testing.T) {
 	_, err = entryWriter.Write([]byte("pwned"))
 	require.NoError(t, err)
 	require.NoError(t, zw.Close())
+	require.NoError(t, cw.Close())
 
 	err = theAPI.RestoreBackup(unlockPassword, &buf)
 	require.ErrorContains(t, err, "refusing to extract zip entry outside restore directory")
@@ -303,6 +304,7 @@ func TestDecryptingReaderFragmentedReader(t *testing.T) {
 	_, err = entryWriter.Write([]byte("backup contents"))
 	require.NoError(t, err)
 	require.NoError(t, zw.Close())
+	require.NoError(t, cw.Close())
 
 	cr, err := decryptingReader(iotest.OneByteReader(bytes.NewReader(buf.Bytes())), "test-unlock-password")
 	require.NoError(t, err)
@@ -334,6 +336,7 @@ func TestDecryptingReaderWrongPassword(t *testing.T) {
 	_, err = entryWriter.Write([]byte("backup contents"))
 	require.NoError(t, err)
 	require.NoError(t, zw.Close())
+	require.NoError(t, cw.Close())
 
 	_, err = decryptingReader(bytes.NewReader(buf.Bytes()), "wrong-password")
 	require.Error(t, err)
