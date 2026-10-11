@@ -94,8 +94,8 @@ The signer writes `backup.json` when channels exist. The hub `.bkp` includes
 it. If Blockstream's cloud goes away: `hsm_secret` → CLN node identity,
 `backup.json` → `glcli signer convert-backup --format cln` → SCB →
 `lightning-cli recoverchannel`, automated end to end by
-`scripts/greenlight/migrate-out.sh` (regtest verified: same node id, peer
-force-close, funds recovered). Greenlight's own `glcli scheduler export`
+`scripts/greenlight/migrate-out.sh` (regtest verified: same node id; funds
+recovered once the peer force-closes, which it does not do on its own). Greenlight's own `glcli scheduler export`
 (channels stay open) is documented upstream but untested: the regtest
 testserver does not implement it.
 

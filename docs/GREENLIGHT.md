@@ -61,8 +61,10 @@ Two paths exist:
    `scripts/greenlight/migrate-out.sh` (env vars documented in the script). It
    converts `backup.json` with `glcli signer convert-backup`, derives
    `hsm_secret` from your mnemonic, starts `lightningd` with the **same node id**,
-   loads the stubs with `recoverchannel` and connects your peers. Peers
-   force-close; your balance arrives on-chain (after their CSV delay). Verified on
+   loads the stubs with `recoverchannel` and connects your peers. CLN peers do
+   **not** force-close automatically; they reply with a warning. Ask each peer or
+   LSP to force-close, and your balance then arrives on-chain (952,898 of 956,667
+   sat recovered on the bench, the rest went to fees). Verified on
    regtest 2026-10-11 (`verify/ev2/migrate-out.log`).
 2. **Official, untested: `glcli scheduler export`.** Greenlight's docs describe
    exporting the node with its database so channels stay open. It makes the
