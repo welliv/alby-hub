@@ -723,6 +723,13 @@ func (g *GreenlightService) ListChannels(ctx context.Context) ([]lnclient.Channe
 		if channel == nil {
 			continue
 		}
+		// A closed channel whose outputs are all resolved has its funds in the
+		// on-chain wallet already; CLN keeps it in ONCHAIN state for ~100
+		// blocks. Listing it would show a phantom "offline" channel with a
+		// stale balance (LDK drops closed channels from ListChannels).
+		if channel.State == clngrpc.ChannelState_Onchain && onchainOutputsResolved(channel.Status) {
+			continue
+		}
 
 		var errorStrings []string
 
@@ -1157,8 +1164,17 @@ func (g *GreenlightService) GetOnchainBalance(ctx context.Context) (*lnclient.On
 	}
 
 	for _, ch := range lf.Channels {
-		if ch == nil || ch.OurAmountMsat == nil || !isClosingState(ch.State) {
+		if ch == nil || ch.OurAmountMsat == nil {
 			continue
+		}
+		if !isClosingState(ch.State) {
+			// Our own unilateral close: the to_local output is CSV-delayed and
+			// is not a wallet output until onchaind sweeps it, so without this
+			// the funds are invisible in balances for to_self_delay blocks.
+			pc := chByID[hex.EncodeToString(ch.ChannelId)]
+			if ch.State != clngrpc.ChannelState_Onchain || pc == nil || !awaitingOwnUnilateralSweep(pc.Status) {
+				continue
+			}
 		}
 
 		amt := sat(ch.OurAmountMsat)
@@ -1759,6 +1775,29 @@ func isClosingState(state clngrpc.ChannelState) bool {
 	default:
 		return false
 	}
+}
+
+// onchainOutputsResolved reports whether onchaind says every output of a
+// closed channel is resolved (funds are in the wallet / with the peer).
+func onchainOutputsResolved(status []string) bool {
+	for _, st := range status {
+		if strings.Contains(st, "All outputs resolved") {
+			return true
+		}
+	}
+	return false
+}
+
+// awaitingOwnUnilateralSweep: we force-closed and onchaind has not yet
+// resolved (swept) our delayed output.
+func awaitingOwnUnilateralSweep(status []string) bool {
+	own := false
+	for _, st := range status {
+		if strings.Contains(st, "Tracking our own unilateral close") {
+			own = true
+		}
+	}
+	return own && !onchainOutputsResolved(status)
 }
 
 func isOpeningState(state clngrpc.ChannelState) bool {
