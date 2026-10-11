@@ -43,14 +43,16 @@ const (
 // nodeHealthStatus is what GetNodeStatus exposes in InternalNodeStatus
 // (additive; the interface field is interface{}).
 type nodeHealthStatus struct {
-	Healthy        bool         `json:"healthy"`
-	NodeConnected  bool         `json:"node_connected"`
-	LastCheckAt    int64        `json:"last_check_at"` // unix seconds
-	LastError      string       `json:"last_error,omitempty"`
-	Signer         SignerStatus `json:"signer,omitempty"`
-	Ready          bool         `json:"ready"`
-	Syncing        bool         `json:"syncing,omitempty"`
-	NotReadyReason string       `json:"not_ready_reason,omitempty"`
+	Healthy          bool         `json:"healthy"`
+	NodeConnected    bool         `json:"node_connected"`
+	LastCheckAt      int64        `json:"last_check_at"` // unix seconds
+	LastError        string       `json:"last_error,omitempty"`
+	Signer           SignerStatus `json:"signer,omitempty"`
+	Ready            bool         `json:"ready"`
+	Syncing          bool         `json:"syncing,omitempty"`
+	NotReadyReason   string       `json:"not_ready_reason,omitempty"`
+	Alerts           []string     `json:"alerts,omitempty"`
+	LspFeeViolations int          `json:"lsp_fee_violations,omitempty"`
 }
 
 func (g *GreenlightService) startHealthWatchdog(ctx context.Context) {

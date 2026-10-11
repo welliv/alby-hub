@@ -150,6 +150,8 @@ func (rawCodec) Marshal(v interface{}) ([]byte, error) {
 	switch m := v.(type) {
 	case []byte:
 		return m, nil
+	case *rawBytesMessage:
+		return m.data, nil
 	case *emptyMessage:
 		return nil, nil
 	case *incomingPaymentMessage:
@@ -170,6 +172,9 @@ func (rawCodec) Unmarshal(data []byte, v interface{}) error {
 		return m.decode(data)
 	case *lspInvoiceResponse:
 		return m.decode(data)
+	case *rawBytesMessage:
+		m.data = append([]byte(nil), data...)
+		return nil
 	case *emptyMessage:
 		return nil
 	default:
@@ -190,6 +195,14 @@ type emptyMessage struct{}
 func (*emptyMessage) Reset()         {}
 func (*emptyMessage) String() string { return "empty" }
 func (*emptyMessage) ProtoMessage()  {}
+
+// rawBytesMessage carries opaque protobuf wire bytes for hand-rolled RPCs
+// (e.g. mock LspInvoice server responses).
+type rawBytesMessage struct{ data []byte }
+
+func (*rawBytesMessage) Reset()         {}
+func (*rawBytesMessage) String() string { return "rawBytes" }
+func (*rawBytesMessage) ProtoMessage()  {}
 
 type incomingPaymentMessage struct {
 	offchain *offChainPayment

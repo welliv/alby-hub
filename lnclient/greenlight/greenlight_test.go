@@ -16,7 +16,9 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/encoding/protowire"
 
@@ -56,6 +58,11 @@ type mockNode struct {
 	fundsOverride    *clngrpc.ListfundsResponse
 	channelsOverride *clngrpc.ListpeerchannelsResponse
 	getinfoDelay     time.Duration
+
+	// LSPS2 / LspInvoice mock controls
+	lspInvoiceOK  bool   // when false, LspInvoice returns Unimplemented (default)
+	lspOpeningFee uint64 // advertised opening_fee_msat returned by LspInvoice
+	lspInvoiceErr error
 }
 
 func newMockNode() *mockNode {
@@ -222,6 +229,12 @@ func (m *mockNode) ListInvoices(ctx context.Context, req *clngrpc.ListinvoicesRe
 
 // markPaid simulates the node receiving a payment for the invoice.
 func (m *mockNode) markPaid(paymentHashHex string) {
+	m.markPaidReceived(paymentHashHex, 0) // 0 → full invoice amount
+}
+
+// markPaidReceived settles an invoice. receivedMsat 0 means credit the full
+// invoice amount (non-JIT). For JIT skim tests pass the actual received amount.
+func (m *mockNode) markPaidReceived(paymentHashHex string, receivedMsat uint64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -234,7 +247,10 @@ func (m *mockNode) markPaid(paymentHashHex string) {
 	paidAt := uint64(time.Now().Unix())
 	inv.Status = clngrpc.ListinvoicesInvoices_PAID
 	inv.PaidAt = &paidAt
-	inv.AmountReceivedMsat = inv.AmountMsat
+	if receivedMsat == 0 && inv.AmountMsat != nil {
+		receivedMsat = inv.AmountMsat.Msat
+	}
+	inv.AmountReceivedMsat = &clngrpc.Amount{Msat: receivedMsat}
 	inv.PaymentPreimage = m.preimages[paymentHashHex]
 	inv.PayIndex = &payIndex
 }
@@ -516,6 +532,10 @@ func startMockNode(t *testing.T, node *mockNode) (clngrpc.NodeClient, *grpc.Clie
 	srv.RegisterService(&grpc.ServiceDesc{
 		ServiceName: "greenlight.Node",
 		HandlerType: (*interface{})(nil),
+		Methods: []grpc.MethodDesc{{
+			MethodName: "LspInvoice",
+			Handler:    lspInvoiceUnaryHandler(node),
+		}},
 		Streams: []grpc.StreamDesc{{
 			StreamName:    "StreamIncoming",
 			Handler:       streamIncomingServerHandler(node),
@@ -549,6 +569,83 @@ func startMockNode(t *testing.T, node *mockNode) (clngrpc.NodeClient, *grpc.Clie
 	}
 
 	return client, conn, cleanup
+}
+
+// lspInvoiceUnaryHandler serves /greenlight.Node/LspInvoice with rawCodec bytes.
+func lspInvoiceUnaryHandler(node *mockNode) grpc.MethodHandler {
+	return func(srv interface{}, ctx context.Context, dec func(interface{}) error, _ grpc.UnaryServerInterceptor) (interface{}, error) {
+		req := &rawBytesMessage{}
+		if err := dec(req); err != nil {
+			return nil, err
+		}
+		node.mu.Lock()
+		errLSP := node.lspInvoiceErr
+		ok := node.lspInvoiceOK
+		fee := node.lspOpeningFee
+		node.mu.Unlock()
+		if errLSP != nil {
+			return nil, errLSP
+		}
+		if !ok {
+			return nil, status.Error(codes.Unimplemented, "LspInvoice not available")
+		}
+		// decode amount_msat (field 3) from the request
+		amountMsat := uint64(0)
+		data := req.data
+		for len(data) > 0 {
+			num, typ, n := protowire.ConsumeTag(data)
+			if n < 0 {
+				break
+			}
+			data = data[n:]
+			if num == 3 && typ == protowire.VarintType {
+				v, n := protowire.ConsumeVarint(data)
+				if n < 0 {
+					break
+				}
+				amountMsat = v
+				data = data[n:]
+				continue
+			}
+			n = protowire.ConsumeFieldValue(num, typ, data)
+			if n < 0 {
+				break
+			}
+			data = data[n:]
+		}
+		preimage := make([]byte, 32)
+		for i := range preimage {
+			preimage[i] = byte(i + 1)
+		}
+		paymentHash := sha256.Sum256(preimage)
+		phHex := hex.EncodeToString(paymentHash[:])
+		bolt11 := fmt.Sprintf("lnbc%s...%s", strconv.FormatUint(amountMsat/1000, 10), phHex)
+		now := time.Now().Unix()
+		desc := "jit"
+		node.mu.Lock()
+		node.invoices[phHex] = &clngrpc.ListinvoicesInvoices{
+			Label:       "jit-" + phHex[:8],
+			Description: &desc,
+			PaymentHash: paymentHash[:],
+			Status:      clngrpc.ListinvoicesInvoices_UNPAID,
+			ExpiresAt:   uint64(now) + 3600,
+			AmountMsat:  &clngrpc.Amount{Msat: amountMsat},
+			Bolt11:      &bolt11,
+		}
+		node.preimages[phHex] = preimage
+		node.mu.Unlock()
+
+		var b []byte
+		b = protowire.AppendTag(b, 1, protowire.BytesType)
+		b = protowire.AppendString(b, bolt11)
+		b = protowire.AppendTag(b, 3, protowire.VarintType)
+		b = protowire.AppendVarint(b, uint64(now+3600))
+		b = protowire.AppendTag(b, 4, protowire.BytesType)
+		b = protowire.AppendBytes(b, paymentHash[:])
+		b = protowire.AppendTag(b, 6, protowire.VarintType)
+		b = protowire.AppendVarint(b, fee)
+		return &rawBytesMessage{data: b}, nil
+	}
 }
 
 // streamIncomingServerHandler delivers raw IncomingPayment payloads pushed by

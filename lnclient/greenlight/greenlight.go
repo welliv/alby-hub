@@ -52,6 +52,10 @@ type Config struct {
 	// SignerStatusProvider returns the signer service's current state.
 	// Nil in external-signer mode (the harness provides the signer).
 	SignerStatusProvider func() SignerStatus
+	// RefuseJitAfterLspViolation, when true, stops minting further LSPS2
+	// JIT invoices after an LSP is observed skimming more than its
+	// advertised opening_fee_msat. Default false (alert only).
+	RefuseJitAfterLspViolation bool
 }
 
 // SignerStatus carries the signer service's health state for surfacing
@@ -85,6 +89,12 @@ type GreenlightService struct {
 	healthCheckTimeout     time.Duration
 	healthFailureThreshold int
 	pumpStallThreshold     time.Duration
+
+	// LSPS2 JIT settle verification (see jit_settle.go)
+	jitMtx        sync.RWMutex
+	jitPending    map[string]jitInvoiceRecord // payment_hash hex → quote
+	jitViolations int
+	jitRefused    bool // set when RefuseJitAfterLspViolation and a skim is seen
 
 	reconciler payReconciler
 }
@@ -131,6 +141,7 @@ func NewGreenlightService(ctx context.Context, eventPublisher events.EventPublis
 		eventPublisher: eventPublisher,
 		config:         config,
 		workDir:        workDir,
+		jitPending:     make(map[string]jitInvoiceRecord),
 	}
 
 	// Fail fast on a truly unreachable node — but never lock the user out
@@ -421,9 +432,15 @@ func (g *GreenlightService) MakeInvoice(ctx context.Context, amountMsat int64, d
 	if amountMsat > 0 && throughNodePubkey == nil {
 		inbound := g.maxReceivableMsat(ctx)
 		if amountMsat > inbound {
+			if g.isJitRefused() {
+				return nil, fmt.Errorf("cannot receive %d sats: JIT invoices refused after an LSP opening-fee violation (inbound %d sats)",
+					amountMsat/1000, inbound/1000)
+			}
 			jit, jitErr := g.lspInvoice(ctx, uint64(amountMsat), description, label)
 			if jitErr == nil {
 				expiresAt := int64(jit.ExpiresAt)
+				paymentHash := hex.EncodeToString(jit.PaymentHash)
+				g.rememberJitInvoice(paymentHash, uint64(amountMsat), jit.OpeningFeeMsat)
 				logger.Logger.WithFields(logrus.Fields{
 					"opening_fee_msat": jit.OpeningFeeMsat,
 					"inbound_msat":     inbound,
@@ -435,14 +452,16 @@ func (g *GreenlightService) MakeInvoice(ctx context.Context, amountMsat int64, d
 					Description:     description,
 					DescriptionHash: descriptionHash,
 					Preimage:        "",
-					PaymentHash:     hex.EncodeToString(jit.PaymentHash),
+					PaymentHash:     paymentHash,
 					AmountMsat:      amountMsat,
 					FeesPaidMsat:    i64(jit.OpeningFeeMsat),
 					CreatedAt:       time.Now().Unix(),
 					ExpiresAt:       &expiresAt,
 					SettledAt:       nil,
-					Metadata:        lnclient.Metadata{},
-					SettleDeadline:  nil,
+					Metadata: lnclient.Metadata{
+						"jit_advertised_fee_msat": jit.OpeningFeeMsat,
+					},
+					SettleDeadline: nil,
 				}, nil
 			}
 			logJitFallback(jitErr, amountMsat, inbound)
@@ -869,10 +888,12 @@ func (g *GreenlightService) GetNodeStatus(ctx context.Context) (*lnclient.NodeSt
 	g.healthMtx.RUnlock()
 
 	hs := nodeHealthStatus{
-		Healthy:       healthy,
-		NodeConnected: healthy,
-		LastCheckAt:   lastCheck.Unix(),
-		LastError:     lastErr,
+		Healthy:          healthy,
+		NodeConnected:    healthy,
+		LastCheckAt:      lastCheck.Unix(),
+		LastError:        lastErr,
+		Alerts:           g.lspFeeAlerts(),
+		LspFeeViolations: g.lspFeeViolationCount(),
 	}
 	if g.config.SignerStatusProvider != nil {
 		hs.Signer = g.config.SignerStatusProvider()
@@ -1621,13 +1642,18 @@ func (g *GreenlightService) clnInvoiceToTransaction(ctx context.Context, invoice
 
 	var amountMsat int64
 	var lspFeeMsat int64
+	var invoiceAmountMsat uint64
+	if invoice.AmountMsat != nil {
+		invoiceAmountMsat = invoice.AmountMsat.Msat
+	}
 	if invoice.Status == clngrpc.ListinvoicesInvoices_PAID && invoice.AmountReceivedMsat != nil {
 		amountMsat = i64(invoice.AmountReceivedMsat.Msat)
 		// LSPS2 JIT: the LSP skims its opening fee, so the node receives
 		// less than the invoice amount; report the skim as the fee (LDK
-		// reports CounterpartySkimmedFeeMsat the same way).
-		if invoice.AmountMsat != nil && invoice.AmountReceivedMsat.Msat < invoice.AmountMsat.Msat {
-			lspFeeMsat = i64(invoice.AmountMsat.Msat - invoice.AmountReceivedMsat.Msat)
+		// reports CounterpartySkimmedFeeMsat the same way). Credit only
+		// the amount actually received.
+		if invoiceAmountMsat > 0 && invoice.AmountReceivedMsat.Msat < invoiceAmountMsat {
+			lspFeeMsat = i64(invoiceAmountMsat - invoice.AmountReceivedMsat.Msat)
 		}
 	} else if invoice.AmountMsat != nil {
 		amountMsat = i64(invoice.AmountMsat.Msat)
@@ -1654,6 +1680,10 @@ func (g *GreenlightService) clnInvoiceToTransaction(ctx context.Context, invoice
 	var created_at int64
 	metadata := map[string]interface{}{}
 	var description_hash string
+	// Settle-time LSPS2 check against the fee advertised at mint time.
+	if invoice.Status == clngrpc.ListinvoicesInvoices_PAID && invoice.AmountReceivedMsat != nil {
+		g.verifyJitSettle(hex.EncodeToString(invoice.PaymentHash), invoiceAmountMsat, invoice.AmountReceivedMsat.Msat, metadata)
+	}
 	switch decoded_invoice.ItemType {
 	case clngrpc.DecodeResponse_BOLT12_INVOICE:
 		if decoded_invoice.InvoiceCreatedAt == nil {
