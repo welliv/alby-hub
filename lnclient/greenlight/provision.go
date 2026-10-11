@@ -164,6 +164,10 @@ func EnsureProvisioned(dataDir, network, glcliPath, nobodyCrt, nobodyKey, mnemon
 		if err != nil {
 			return sanitized, fmt.Errorf("%w: %s", err, sanitized)
 		}
+		// glcli (<= 0.1.3) prints RPC failures but still exits 0.
+		if glcliReportedFailure(sanitized) {
+			return sanitized, fmt.Errorf("glcli reported failure (exit 0): %s", sanitized)
+		}
 		return sanitized, nil
 	}
 
@@ -249,4 +253,18 @@ func ScheduleNodeURIForRegtest(dataDir, network, glcliPath string) (string, erro
 		return "", fmt.Errorf("no grpc_uri in schedule output")
 	}
 	return strings.TrimPrefix(strings.TrimPrefix(m[1], "https://"), "http://"), nil
+}
+
+// glcliReportedFailure detects glcli failures that exit with status 0
+// (observed: "Failed to register node: status: ...", "Failed to export node",
+// "Error calling method Xpay: RpcError ...").
+func glcliReportedFailure(out string) bool {
+	for _, line := range strings.Split(out, "\n") {
+		l := strings.TrimSpace(line)
+		if strings.HasPrefix(l, "Failed to ") || strings.HasPrefix(l, "Error calling method ") ||
+			(strings.HasPrefix(l, "status: ") && strings.Contains(l, "message:")) {
+			return true
+		}
+	}
+	return false
 }

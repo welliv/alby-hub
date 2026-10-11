@@ -127,3 +127,22 @@ func TestEnsureSeedFile_RewritesAfterShred(t *testing.T) {
 		t.Fatal("rewritten hsm_secret mismatch")
 	}
 }
+
+func TestGlcliReportedFailure(t *testing.T) {
+	fail := []string{
+		`Failed to register node: status: AlreadyExists, message: "x"`,
+		"Are you sure? (y/N) \nFailed to export node: status: Cancelled, message: \"x\"",
+		`Error calling method Xpay: RpcError { code: None, message: "no response from lightningd", data: None }`,
+		`status: Unavailable, message: "error trying to connect: received fatal alert: Unknown(225)"`,
+	}
+	for _, f := range fail {
+		if !glcliReportedFailure(f) {
+			t.Errorf("should detect failure: %q", f)
+		}
+	}
+	for _, ok := range []string{"", `NodeInfoResponse { node_id: [2], grpc_uri: "https://x" }`, "Registered node"} {
+		if glcliReportedFailure(ok) {
+			t.Errorf("false positive: %q", ok)
+		}
+	}
+}
