@@ -7,7 +7,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/encoding/protowire"
 
-	"github.com/getAlby/hub/lnclient/cln/clngrpc"
 	"github.com/getAlby/hub/logger"
 	"github.com/sirupsen/logrus"
 )
@@ -43,24 +42,6 @@ func (g *GreenlightService) lspInvoice(ctx context.Context, amountMsat uint64, d
 		PaymentHash:    resp.PaymentHash,
 		OpeningFeeMsat: resp.OpeningFeeMsat,
 	}, nil
-}
-
-func (g *GreenlightService) maxReceivableMsat(ctx context.Context) int64 {
-	resp, err := g.client.ListPeerChannels(ctx, &clngrpc.ListpeerchannelsRequest{})
-	if err != nil {
-		logger.Logger.WithError(err).Debug("listpeerchannels for JIT inbound check failed")
-		return 0
-	}
-	var total int64
-	for _, ch := range resp.Channels {
-		if ch == nil || ch.State != clngrpc.ChannelState_ChanneldNormal || !ch.PeerConnected {
-			continue
-		}
-		if ch.ReceivableMsat != nil {
-			total += i64(ch.ReceivableMsat.Msat)
-		}
-	}
-	return total
 }
 
 func encodeLspInvoiceRequest(amountMsat uint64, description, label string) []byte {

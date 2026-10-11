@@ -186,3 +186,11 @@ func TestDecodeLspInvoiceResponseRejectsOversizedExpiry(t *testing.T) {
 		t.Fatalf("expected out-of-range error, got ExpiresAt=%d", resp.ExpiresAt)
 	}
 }
+
+func FuzzLspInvoiceResponseDecode(f *testing.F) {
+	f.Add([]byte{0x0a, 0x01, 0x41})
+	f.Fuzz(func(t *testing.T, b []byte) {
+		r := &lspInvoiceResponse{}
+		_ = r.decode(b)
+	})
+}

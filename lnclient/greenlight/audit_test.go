@@ -21,14 +21,6 @@ func FuzzIncomingPaymentDecode(f *testing.F) {
 	})
 }
 
-func FuzzLspInvoiceResponseDecode(f *testing.F) {
-	f.Add([]byte{0x0a, 0x01, 0x41})
-	f.Fuzz(func(t *testing.T, b []byte) {
-		r := &lspInvoiceResponse{}
-		_ = r.decode(b)
-	})
-}
-
 func FuzzHostOf(f *testing.F) {
 	f.Add("gl1abc.gl.blckstrm.com:443")
 	f.Fuzz(func(t *testing.T, s string) { _ = hostOf(normalizeNodeURI(s)) })

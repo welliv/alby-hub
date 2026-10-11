@@ -426,62 +426,11 @@ func (g *GreenlightService) MakeInvoice(ctx context.Context, amountMsat int64, d
 	}
 	myExpiry := uint64(expiry)
 
-	// LDK equivalent: ReceiveViaJitChannel when the amount exceeds inbound.
-	// Greenlight's gl-plugin already negotiates LSPS2 in LspInvoice; we only
-	// call it when inbound is short. No LSP peer → fall back to Invoice.
+	// Above inbound capacity: LSPS2 JIT when available (jit.go), otherwise a
+	// clear error instead of an unpayable invoice.
 	if amountMsat > 0 && throughNodePubkey == nil {
-		inbound := g.maxReceivableMsat(ctx)
-		if amountMsat > inbound {
-			if g.isJitRefused() {
-				return nil, fmt.Errorf("cannot receive %d sats: JIT invoices refused after an LSP opening-fee violation (inbound %d sats)",
-					amountMsat/1000, inbound/1000)
-			}
-			jit, jitErr := g.lspInvoice(ctx, uint64(amountMsat), description, label)
-			if jitErr == nil {
-				expiresAt := int64(jit.ExpiresAt)
-				paymentHash := hex.EncodeToString(jit.PaymentHash)
-				g.rememberJitInvoice(paymentHash, uint64(amountMsat), jit.OpeningFeeMsat)
-				logger.Logger.WithFields(logrus.Fields{
-					"opening_fee_msat": jit.OpeningFeeMsat,
-					"inbound_msat":     inbound,
-					"amount_msat":      amountMsat,
-				}).Info("greenlight JIT invoice via LspInvoice")
-				return &lnclient.Transaction{
-					Type:            "incoming",
-					Invoice:         jit.Bolt11,
-					Description:     description,
-					DescriptionHash: descriptionHash,
-					Preimage:        "",
-					PaymentHash:     paymentHash,
-					AmountMsat:      amountMsat,
-					FeesPaidMsat:    i64(jit.OpeningFeeMsat),
-					CreatedAt:       time.Now().Unix(),
-					ExpiresAt:       &expiresAt,
-					SettledAt:       nil,
-					Metadata: lnclient.Metadata{
-						"jit_advertised_fee_msat": jit.OpeningFeeMsat,
-					},
-					SettleDeadline: nil,
-				}, nil
-			}
-			logJitFallback(jitErr, amountMsat, inbound)
-			// Node unreachable: say so instead of blaming liquidity
-			// (inbound reads as 0 when ListPeerChannels itself failed).
-			if isNodeUnreachable(jitErr) {
-				return nil, fmt.Errorf("greenlight node unreachable, cannot create invoice: %w", jitErr)
-			}
-			if g.eventPublisher != nil {
-				g.eventPublisher.Publish(&events.Event{
-					Event: "nwc_incoming_liquidity_required",
-					Properties: map[string]interface{}{
-						"node_type": "GREENLIGHT",
-					},
-				})
-			}
-			// A regular invoice above inbound capacity is unpayable: fail
-			// clearly instead of handing the payer a dead invoice.
-			return nil, fmt.Errorf("cannot receive %d sats: inbound liquidity is %d sats and the LSP could not open a channel (%s)",
-				amountMsat/1000, inbound/1000, lspErrorReason(jitErr))
+		if inbound := g.maxReceivableMsat(ctx); amountMsat > inbound {
+			return g.receiveAboveInbound(ctx, amountMsat, inbound, description, descriptionHash, label)
 		}
 	}
 
@@ -1904,20 +1853,6 @@ func confirmationsRequiredFromStatus(status []string) (uint32, *string) {
 	return 0, &errNotFound
 }
 
-func lspErrorReason(err error) string {
-	if err == nil {
-		return "unknown"
-	}
-	msg := err.Error()
-	if i := strings.LastIndex(msg, "Error code"); i >= 0 {
-		msg = msg[i:]
-	}
-	if len(msg) > 200 {
-		msg = msg[:200]
-	}
-	return msg
-}
-
 // isNodeUnreachable reports a transport-level failure to reach the hosted
 // node (as opposed to an application error from the node/LSP).
 func isNodeUnreachable(err error) bool {
@@ -1962,3 +1897,21 @@ func validateInvoiceDescription(description string, hashOnly bool) error {
 // errUnverifiedPreimage is deliberately not a definitive failure: the payment
 // is tracked as pending and reconciled (and never settled on a bad preimage).
 var errUnverifiedPreimage = errors.New("node reported payment success with a preimage that does not match the payment hash")
+
+func (g *GreenlightService) maxReceivableMsat(ctx context.Context) int64 {
+	resp, err := g.client.ListPeerChannels(ctx, &clngrpc.ListpeerchannelsRequest{})
+	if err != nil {
+		logger.Logger.WithError(err).Debug("listpeerchannels for JIT inbound check failed")
+		return 0
+	}
+	var total int64
+	for _, ch := range resp.Channels {
+		if ch == nil || ch.State != clngrpc.ChannelState_ChanneldNormal || !ch.PeerConnected {
+			continue
+		}
+		if ch.ReceivableMsat != nil {
+			total += i64(ch.ReceivableMsat.Msat)
+		}
+	}
+	return total
+}

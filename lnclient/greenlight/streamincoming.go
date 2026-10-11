@@ -3,7 +3,6 @@ package greenlight
 import (
 	"context"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"time"
 
@@ -144,6 +143,9 @@ func sleepOrDone(ctx context.Context, d time.Duration) bool {
 // rawCodec is a grpc codec that passes through raw bytes for the hand-rolled
 // message types and falls back to the protobuf runtime for generated types.
 // It is only attached to the StreamIncoming call via CallCustomCodec.
+// rawDecodable is implemented by the hand-rolled receive-only messages.
+type rawDecodable interface{ decode([]byte) error }
+
 type rawCodec struct{}
 
 func (rawCodec) Marshal(v interface{}) ([]byte, error) {
@@ -154,10 +156,8 @@ func (rawCodec) Marshal(v interface{}) ([]byte, error) {
 		return m.data, nil
 	case *emptyMessage:
 		return nil, nil
-	case *incomingPaymentMessage:
-		return nil, errors.New("incomingPaymentMessage is receive-only")
-	case *lspInvoiceResponse:
-		return nil, errors.New("lspInvoiceResponse is receive-only")
+	case rawDecodable:
+		return nil, fmt.Errorf("%T is receive-only", m)
 	default:
 		if pm, ok := v.(proto.Message); ok {
 			return proto.Marshal(pm)
@@ -168,9 +168,7 @@ func (rawCodec) Marshal(v interface{}) ([]byte, error) {
 
 func (rawCodec) Unmarshal(data []byte, v interface{}) error {
 	switch m := v.(type) {
-	case *incomingPaymentMessage:
-		return m.decode(data)
-	case *lspInvoiceResponse:
+	case rawDecodable:
 		return m.decode(data)
 	case *rawBytesMessage:
 		m.data = append([]byte(nil), data...)
