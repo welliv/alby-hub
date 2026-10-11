@@ -197,6 +197,13 @@ type PayOfferResponse = struct {
 
 type PayKeysendResponse struct {
 	FeeMsat uint64
+	// The preimage and payment hash the backend actually used for the
+	// payment. Backends that derive their own preimage server-side
+	// (CLN/Greenlight keysend) must report the real values here so the
+	// recorded transaction matches the network reality; backends that
+	// honor the caller-provided preimage (LDK) report the same value.
+	Preimage    string
+	PaymentHash string
 }
 
 type BalancesResponse struct {
@@ -262,3 +269,15 @@ func NewHoldInvoiceCanceledError() error {
 func (err *holdInvoiceCanceledError) Error() string {
 	return "Hold invoice canceled"
 }
+
+// ErrPaymentPending is returned (wrapped) by SendPaymentSync / SendKeysend
+// when the outcome of a payment is unknown (e.g. a transport error after the
+// request may have reached the node). Callers must keep the payment pending
+// and must not release budgets: the backend reconciles the final state
+// asynchronously via nwc_lnclient_payment_sent / nwc_lnclient_payment_failed.
+var ErrPaymentPending = errors.New("payment outcome unknown, still pending")
+
+// MetadataRequestedPaymentHash is set on payment events when the backend
+// settled a payment under a different payment hash than the one the hub
+// recorded (keysend on CLN-family backends derives its own preimage).
+const MetadataRequestedPaymentHash = "requested_payment_hash"

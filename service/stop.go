@@ -22,6 +22,9 @@ func (svc *service) StopApp() error {
 
 // stopAppInternal must be called while holding the start lock
 func (svc *service) stopAppInternal() {
+	if svc.glSigner != nil {
+		svc.glSigner.Stop()
+	}
 	if svc.appCancelFn != nil {
 		logger.Logger.Info("Stopping app...")
 		svc.appCancelFn()

@@ -34,6 +34,7 @@ import (
 	"github.com/getAlby/hub/db/queries"
 	"github.com/getAlby/hub/events"
 	"github.com/getAlby/hub/lnclient"
+	"github.com/getAlby/hub/lnclient/greenlight"
 	"github.com/getAlby/hub/logger"
 	permissions "github.com/getAlby/hub/nip47/permissions"
 	"github.com/getAlby/hub/service"
@@ -1534,7 +1535,7 @@ func (api *api) GetInfo(ctx context.Context) (*InfoResponse, error) {
 	info.VssSupported = backendType == config.LDKBackendType && api.cfg.GetEnv().LDKVssUrl != ""
 	info.LdkVssUrl = api.cfg.GetEnv().LDKVssUrl
 	info.DatabaseType = api.db.Dialector.Name()
-	info.SupportsBolt12 = backendType == config.LDKBackendType || backendType == config.CLNBackendType
+	info.SupportsBolt12 = backendType == config.LDKBackendType || backendType == config.CLNBackendType || backendType == config.GreenlightBackendType
 	info.AutoUnlockPasswordEnabled = autoUnlockPassword != ""
 	info.AutoUnlockPasswordSupported = api.cfg.GetEnv().IsDefaultClientId()
 	info.Relays = []InfoResponseRelay{}
@@ -1556,10 +1557,13 @@ func (api *api) GetInfo(ctx context.Context) (*InfoResponse, error) {
 	info.AlbyUserIdentifier = albyUserIdentifier
 
 	if lnClient != nil {
-		nodeInfo, err := lnClient.GetInfo(ctx)
+		// bounded: /api/info must answer even when a remote node is frozen
+		infoCtx, infoCancel := context.WithTimeout(ctx, 5*time.Second)
+		nodeInfo, err := lnClient.GetInfo(infoCtx)
+		infoCancel()
 		if err != nil {
 			logger.Logger.WithError(err).Error("Failed to get nodeInfo")
-			return nil, err
+			nodeInfo = &lnclient.NodeInfo{Network: api.cfg.GetNetwork()}
 		}
 
 		info.Network = nodeInfo.Network
@@ -1773,6 +1777,19 @@ func (api *api) setupInternal(ctx context.Context, setupRequest *SetupRequest) e
 		if err != nil {
 			logger.Logger.WithError(err).Error("Failed to save encrypted mnemonic")
 			return err
+		}
+		// Product path: materialize hsm_secret into the hub data dir at setup
+		// so unlock can start the supervised signer without guessing a path.
+		if setupRequest.LNBackendType == config.GreenlightBackendType {
+			seed, seedErr := greenlight.MnemonicToSeed32(setupRequest.Mnemonic)
+			if seedErr != nil {
+				return seedErr
+			}
+			glDir := filepath.Join(api.cfg.GetEnv().Workdir, "greenlight")
+			if err = greenlight.WriteSeedFile(glDir, seed); err != nil {
+				logger.Logger.WithError(err).Error("Failed to write greenlight hsm_secret")
+				return err
+			}
 		}
 	}
 	if setupRequest.LNDAddress != "" {

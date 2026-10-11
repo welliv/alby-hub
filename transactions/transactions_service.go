@@ -451,6 +451,12 @@ func (svc *transactionsService) SendPaymentSync(payReq string, amountMsat *uint6
 			"bolt11": payReq,
 		}).WithError(err).Error("Failed to send payment")
 
+		if errors.Is(err, lnclient.ErrPaymentPending) {
+			// outcome unknown: keep the payment pending (budget stays
+			// reserved); the backend reconciles it via payment events
+			return nil, err
+		}
+
 		if _, markFailedErr := svc.markPaymentFailed(&dbTransaction, err.Error()); markFailedErr != nil {
 			logger.Logger.WithFields(logrus.Fields{
 				"bolt11": payReq,
@@ -583,6 +589,9 @@ func (svc *transactionsService) SendKeysend(amountMsat uint64, destination strin
 			"destination": destination,
 			"amount_msat": amountMsat,
 		}).WithError(err).Error("Failed to send payment")
+		if errors.Is(err, lnclient.ErrPaymentPending) {
+			return nil, err
+		}
 
 		if _, markFailedErr := svc.markPaymentFailed(&dbTransaction, err.Error()); markFailedErr != nil {
 			logger.Logger.WithFields(logrus.Fields{
@@ -592,6 +601,44 @@ func (svc *transactionsService) SendKeysend(amountMsat uint64, destination strin
 		}
 
 		return nil, err
+	}
+
+	// Some backends (CLN/Greenlight keysend) derive their own preimage
+	// server-side and cannot honor the caller-provided one — they report
+	// the actual preimage and payment hash in the response. Record the
+	// truth: a transaction whose payment hash never settled on the
+	// network (or whose preimage can't prove the payment) is a lie.
+	if payKeysendResponse != nil && payKeysendResponse.Preimage != "" && payKeysendResponse.Preimage != preimage {
+		logger.Logger.WithFields(logrus.Fields{
+			"synthesized_payment_hash": paymentHash,
+			"actual_payment_hash":      payKeysendResponse.PaymentHash,
+		}).Debug("backend derived its own keysend preimage — recording the actual values")
+
+		preimage = payKeysendResponse.Preimage
+		paymentHash = payKeysendResponse.PaymentHash
+		if paymentHash == "" {
+			// keysend construction: payment hash is sha256(preimage)
+			preImageBytes, err := hex.DecodeString(preimage)
+			if err != nil {
+				return nil, fmt.Errorf("backend returned an undecodable keysend preimage: %w", err)
+			}
+			paymentHash256 := sha256.New()
+			paymentHash256.Write(preImageBytes)
+			paymentHash = hex.EncodeToString(paymentHash256.Sum(nil))
+		}
+		// map-based update: GORM skips zero-value struct fields, and an
+		// empty payment hash must still be persisted if it ever occurs
+		err = svc.db.Model(&dbTransaction).Updates(map[string]interface{}{
+			"payment_hash": paymentHash,
+			"preimage":     preimage,
+		}).Error
+		if err != nil {
+			return nil, fmt.Errorf("failed to update transaction with the actual keysend preimage: %w", err)
+		}
+		// keep the in-memory model consistent: the settlement dedup and
+		// the returned transaction must carry the values that settled
+		dbTransaction.PaymentHash = paymentHash
+		dbTransaction.Preimage = &preimage
 	}
 
 	// the payment definitely succeeded
@@ -868,6 +915,23 @@ func (svc *transactionsService) ConsumeEvent(ctx context.Context, event *events.
 			return
 		}
 
+		// credit what the node actually received: on JIT/LSP invoices the
+		// LSP skims its opening fee, so the received amount is below the
+		// invoice amount. Crediting the invoice amount would over-credit
+		// isolated sub-wallets by the fee.
+		// Only applied when the backend reports the skim explicitly
+		// (received + fee == invoice amount), so other backends' events are
+		// unaffected.
+		if dbTransaction.State == constants.TRANSACTION_STATE_PENDING && lnClientTransaction.AmountMsat > 0 &&
+			lnClientTransaction.FeesPaidMsat > 0 &&
+			uint64(lnClientTransaction.AmountMsat+lnClientTransaction.FeesPaidMsat) == dbTransaction.AmountMsat {
+			if err := svc.db.Model(&dbTransaction).Update("amount_msat", uint64(lnClientTransaction.AmountMsat)).Error; err != nil {
+				logger.Logger.WithError(err).Error("Failed to update received amount")
+				return
+			}
+			dbTransaction.AmountMsat = uint64(lnClientTransaction.AmountMsat)
+		}
+
 		if _, err := svc.markTransactionSettled(&dbTransaction, lnClientTransaction.Preimage, uint64(lnClientTransaction.FeesPaidMsat), false); err != nil {
 			logger.Logger.WithFields(logrus.Fields{
 				"payment_hash": lnClientTransaction.PaymentHash,
@@ -894,6 +958,8 @@ func (svc *transactionsService) ConsumeEvent(ctx context.Context, event *events.
 		}
 
 		var dbTransaction db.Transaction
+
+		svc.remapRequestedPaymentHash(lnClientTransaction)
 
 		// first lookup by pending
 		result := svc.db.Limit(1).Find(&dbTransaction, &db.Transaction{
@@ -1696,7 +1762,12 @@ func (svc *transactionsService) checkBudgetUsage(app *db.App, dbTransaction *db.
 	}
 	budgetUsageSat := budgetUsageMsat / 1000
 	warningUsage := uint64(math.Floor(float64(appPermission.MaxAmountSat) * 0.8))
-	if budgetUsageSat >= warningUsage && budgetUsageSat-dbTransaction.AmountMsat/1000 < warningUsage {
+	transactionSat := dbTransaction.AmountMsat / 1000
+	previousUsageSat := uint64(0)
+	if budgetUsageSat > transactionSat {
+		previousUsageSat = budgetUsageSat - transactionSat
+	}
+	if budgetUsageSat >= warningUsage && previousUsageSat < warningUsage {
 		return &events.Event{
 			Event: "nwc_budget_warning",
 			Properties: map[string]interface{}{
@@ -1773,4 +1844,25 @@ func (svc *transactionsService) markPaymentFailed(dbTransaction *db.Transaction,
 	}
 	svc.publishEvents(eventsToPublish)
 	return markedFailed, nil
+}
+
+
+// remapRequestedPaymentHash: CLN-family keysend derives its own preimage,
+// so a reconciled payment event can carry a different hash than the one the
+// hub recorded. When the event names the hash the hub recorded, rewrite the
+// pending transaction to the real hash/preimage before settlement lookup.
+func (svc *transactionsService) remapRequestedPaymentHash(lnClientTransaction *lnclient.Transaction) {
+	if lnClientTransaction == nil || lnClientTransaction.Metadata == nil {
+		return
+	}
+	requested, ok := lnClientTransaction.Metadata[lnclient.MetadataRequestedPaymentHash].(string)
+	if !ok || requested == "" || requested == lnClientTransaction.PaymentHash {
+		return
+	}
+	result := svc.db.Model(&db.Transaction{}).
+		Where("type = ? AND state = ? AND payment_hash = ?", constants.TRANSACTION_TYPE_OUTGOING, constants.TRANSACTION_STATE_PENDING, requested).
+		Updates(map[string]interface{}{"payment_hash": lnClientTransaction.PaymentHash})
+	if result.Error != nil {
+		logger.Logger.WithError(result.Error).Error("Failed to remap keysend payment hash")
+	}
 }

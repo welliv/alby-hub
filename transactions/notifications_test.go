@@ -443,3 +443,29 @@ func TestNotifications_SentWithFailedAndPendingPayment(t *testing.T) {
 	assert.Equal(t, constants.TRANSACTION_STATE_SETTLED, transactions[0].State)
 	assert.Equal(t, constants.TRANSACTION_STATE_FAILED, transactions[1].State)
 }
+
+func TestNotifications_ReceivedJitPaymentCreditsReceivedAmount(t *testing.T) {
+	ctx := context.TODO()
+	svc, err := tests.CreateTestService(t)
+	require.NoError(t, err)
+	defer svc.Remove()
+
+	svc.DB.Create(&db.Transaction{
+		State:       constants.TRANSACTION_STATE_PENDING,
+		Type:        constants.TRANSACTION_TYPE_INCOMING,
+		PaymentHash: "jit00000000000000000000000000000000000000000000000000000000000",
+		AmountMsat:  50_000_000,
+	})
+	transactionsService := NewTransactionsService(svc.DB, svc.EventPublisher)
+	transactionsService.ConsumeEvent(ctx, &events.Event{
+		Event: "nwc_lnclient_payment_received",
+		Properties: &lnclient.Transaction{Type: "incoming", PaymentHash: "jit00000000000000000000000000000000000000000000000000000000000",
+			Preimage: "aa", AmountMsat: 47_500_000, FeesPaidMsat: 2_500_000},
+	}, map[string]interface{}{})
+
+	var tx db.Transaction
+	require.NoError(t, svc.DB.First(&tx, "payment_hash = ?", "jit00000000000000000000000000000000000000000000000000000000000").Error)
+	assert.Equal(t, constants.TRANSACTION_STATE_SETTLED, tx.State)
+	// the LSP skimmed 2,500 sat: credit only what the node received
+	assert.Equal(t, uint64(47_500_000), tx.AmountMsat)
+}

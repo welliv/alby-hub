@@ -437,12 +437,20 @@ func TestSendPaymentSync_PendingHasFeeReserve(t *testing.T) {
 	go func() {
 		transactionsService.SendPaymentSync(tests.MockLNClientTransaction.Invoice, nil, nil, svc.LNClient, nil, nil)
 	}()
-	// ensure the goroutine above runs first
-	time.Sleep(10 * time.Millisecond)
-
+	// ensure the goroutine above runs first (race builds need more headroom)
+	deadline := time.Now().Add(2 * time.Second)
+	var transaction *db.Transaction
 	transactionType := constants.TRANSACTION_TYPE_OUTGOING
-	transaction, err := transactionsService.LookupTransaction(context.TODO(), tests.MockLNClientTransaction.PaymentHash, &transactionType, svc.LNClient, nil)
+	for time.Now().Before(deadline) {
+		transaction, err = transactionsService.LookupTransaction(context.TODO(), tests.MockLNClientTransaction.PaymentHash, &transactionType, svc.LNClient, nil)
+		if err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
 	assert.NoError(t, err)
+	require.NotNil(t, transaction)
 
 	assert.Equal(t, uint64(123000), transaction.AmountMsat)
 	assert.Equal(t, constants.TRANSACTION_STATE_PENDING, transaction.State)
@@ -505,4 +513,51 @@ func TestConsumeEvent_FailedMarkedAsSuccessful(t *testing.T) {
 
 	transaction = &transactions[0]
 	assert.Equal(t, constants.TRANSACTION_STATE_SETTLED, transaction.State)
+}
+
+func TestSendPaymentSync_AmbiguousErrorStaysPending(t *testing.T) {
+	svc, err := tests.CreateTestService(t)
+	require.NoError(t, err)
+	defer svc.Remove()
+
+	svc.LNClient.(*tests.MockLn).PayInvoiceErrors = append(svc.LNClient.(*tests.MockLn).PayInvoiceErrors, fmt.Errorf("%w: transport reset", lnclient.ErrPaymentPending))
+	svc.LNClient.(*tests.MockLn).PayInvoiceResponses = append(svc.LNClient.(*tests.MockLn).PayInvoiceResponses, nil)
+
+	transactionsService := NewTransactionsService(svc.DB, svc.EventPublisher)
+	transaction, err := transactionsService.SendPaymentSync(tests.MockLNClientTransaction.Invoice, nil, nil, svc.LNClient, nil, nil)
+	assert.ErrorIs(t, err, lnclient.ErrPaymentPending)
+	assert.Nil(t, transaction)
+
+	transactionType := constants.TRANSACTION_TYPE_OUTGOING
+	transaction, err = transactionsService.LookupTransaction(context.TODO(), tests.MockLNClientTransaction.PaymentHash, &transactionType, svc.LNClient, nil)
+	assert.NoError(t, err)
+	// must NOT be failed: budget/fee reserve stay held until the backend reconciles
+	assert.Equal(t, constants.TRANSACTION_STATE_PENDING, transaction.State)
+	assert.NotZero(t, transaction.FeeReserveMsat)
+}
+
+func TestPaymentSentEvent_RemapsKeysendRequestedHash(t *testing.T) {
+	svc, err := tests.CreateTestService(t)
+	require.NoError(t, err)
+	defer svc.Remove()
+
+	synthetic := "aa00000000000000000000000000000000000000000000000000000000000000"
+	real := "bb00000000000000000000000000000000000000000000000000000000000000"
+	dbTx := db.Transaction{Type: constants.TRANSACTION_TYPE_OUTGOING, State: constants.TRANSACTION_STATE_PENDING, PaymentHash: synthetic, AmountMsat: 1000}
+	require.NoError(t, svc.DB.Create(&dbTx).Error)
+
+	transactionsService := NewTransactionsService(svc.DB, svc.EventPublisher)
+	transactionsService.ConsumeEvent(context.TODO(), &events.Event{
+		Event: "nwc_lnclient_payment_sent",
+		Properties: &lnclient.Transaction{Type: "outgoing", PaymentHash: real, Preimage: "cc", AmountMsat: 1000,
+			Metadata: lnclient.Metadata{lnclient.MetadataRequestedPaymentHash: synthetic}},
+	}, map[string]interface{}{})
+
+	var reloaded db.Transaction
+	require.NoError(t, svc.DB.First(&reloaded, dbTx.ID).Error)
+	assert.Equal(t, constants.TRANSACTION_STATE_SETTLED, reloaded.State)
+	assert.Equal(t, real, reloaded.PaymentHash)
+	var count int64
+	svc.DB.Model(&db.Transaction{}).Count(&count)
+	assert.Equal(t, int64(1), count, "must not create a duplicate transaction")
 }

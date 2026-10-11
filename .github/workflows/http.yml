@@ -130,6 +130,7 @@ jobs:
 
       - name: Import Code-Signing Certificates for macOS
         if: >-
+          github.repository_owner == 'getAlby' &&
           runner.os == 'macOS' &&
           (
             !github.event.pull_request ||
@@ -175,6 +176,7 @@ jobs:
 
       - name: Sign the MacOS binary and libraries
         if: >-
+          github.repository_owner == 'getAlby' &&
           runner.os == 'macOS' &&
           (
             !github.event.pull_request ||
