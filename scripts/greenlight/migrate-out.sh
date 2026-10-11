@@ -2,7 +2,14 @@
 # migrate-out.sh — move an Alby Hub Greenlight node to a self-hosted Core Lightning node.
 # Executes every step: convert the signer channel backup, derive hsm_secret from the
 # mnemonic, start lightningd with the same node id, load the SCB stubs, connect to the
-# peers (they then force-close and pay our balance to our on-chain wallet), report funds.
+# peers and report funds.
+# IMPORTANT (verified on CLN v26.06gl1, 2026-10-11): a CLN peer does NOT force-close on
+# its own. It answers the stub's reestablish with a warning ("bad reestablish
+# revocation_number") and keeps the channel. Ask each peer/LSP to force-close; once they
+# do, our balance lands in this node's wallet (verified: 952,898 of 956,667 sat; the
+# rest went to fees). Stubs for channels that were already closed log a harmless
+# "FUNDS LOST. Unknown commitment" line: those funds are already on-chain.
+# Set WAIT_CLOSE_SECS to wait for the peers' force-close and report funds again.
 #
 # Required env:
 #   GL_DIR          hub's greenlight dir (contains backup.json)        e.g. ~/.local/share/albyhub/greenlight
@@ -64,6 +71,9 @@ for p in ${PEERS:-}; do
   "${LC[@]}" connect "$pk" "${ha%:*}" "${ha##*:}" >/dev/null && log "connected $pk" || log "WARN: could not connect $pk"
 done
 
-log "6/6 funds (peers force-close stub channels; delayed outputs arrive after their CSV)"
-"${LC[@]}" listfunds | python3 -c 'import sys,json;d=json.load(sys.stdin);print("onchain_sat=",sum(o["amount_msat"] for o in d["outputs"])//1000,"channels=",[(c["short_channel_id"] if "short_channel_id" in c else "?",c["state"]) for c in d["channels"]])'
+funds(){ "${LC[@]}" listfunds | python3 -c 'import sys,json;d=json.load(sys.stdin);print("confirmed_onchain_sat=",sum(o["amount_msat"] for o in d["outputs"] if o["status"]=="confirmed")//1000)'; }
+log "6/6 funds now: $(funds)"
+"${LC[@]}" listpeerchannels | python3 -c 'import sys,json;[print("  stub",c["channel_id"],c["state"],"peer",c["peer_id"]) for c in json.load(sys.stdin)["channels"]]'
+log "ACTION: ask each peer above to force-close its channel with $ID; funds then arrive here."
+if [ -n "${WAIT_CLOSE_SECS:-}" ]; then sleep "$WAIT_CLOSE_SECS"; log "funds after wait: $(funds)"; fi
 log "done. Keep $CLN_DIR/recover.json and the mnemonic safe. Do NOT start Alby Hub's Greenlight signer for this node again."
