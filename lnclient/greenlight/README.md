@@ -84,15 +84,20 @@ GREENLIGHT_NODE_URI=gl1<node_id>.nodes.gl.blckstrm.com:443
 | Open channel manually | yes | yes (`FundChannel`/`Close`; peer must be reachable from Blockstream infra) |
 | ResetRouter | yes | not applicable (the node owns the graph) |
 | Node availability | local | depends on Blockstream; a frozen node needs their restart |
-| Backup | seed + VSS | mnemonic in encrypted DB; `backup.json` SCB once channels exist |
+| Backup | seed + VSS | mnemonic in encrypted DB; `backup.json` SCB once channels exist; `.bkp` authenticated (AES-GCM) |
+| Closed channels in list | dropped | hidden once all on-chain outputs are resolved; own force-close funds shown as pending |
+| Custom node commands | some | `resolve-payment` |
 
 ## Backups and exit strategy
 
 The signer writes `backup.json` when channels exist. The hub `.bkp` includes
 it. If Blockstream's cloud goes away: `hsm_secret` → CLN node identity,
 `backup.json` → `glcli signer convert-backup --format cln` → SCB →
-`lightning-cli recoverchannel`. Everything needed to self-host is already on
-your disk.
+`lightning-cli recoverchannel`, automated end to end by
+`scripts/greenlight/migrate-out.sh` (regtest verified: same node id, peer
+force-close, funds recovered). Greenlight's own `glcli scheduler export`
+(channels stay open) is documented upstream but untested: the regtest
+testserver does not implement it.
 
 [ARCHITECTURE.md](ARCHITECTURE.md) covers the integration design.
 [docs/RUNBOOK.md](docs/RUNBOOK.md) covers operations and troubleshooting.

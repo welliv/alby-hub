@@ -77,19 +77,20 @@ them because a library can't self-monitor the way a process supervisor can.
 |---|---|---|
 | GetInfo | ✅ | `cln.Getinfo` (gRPC) |
 | GetBalances | ✅ | `cln.ListFunds` + `cln.ListPeerChannels` |
-| SendPaymentSync | ✅ | `cln.Pay` |
+| SendPaymentSync | ✅ | `cln.Xpay` after local bolt11 validation; settle only with a verified preimage |
 | SendKeysend | ✅ | `cln.Keysend` (records real preimage from response) |
-| MakeInvoice | ✅ | `cln.Offer` |
+| MakeInvoice | ✅ | `cln.Invoice`, or GL `LspInvoice` (LSPS2 JIT) when inbound is insufficient; advertised fee checked on settle |
 | WaitInvoice | ✅ | WaitAnyInvoice pump (30s timeout, restart-safe index) |
 | NewAddress | ✅ | `cln.NewAddr` |
 | Withdraw | ✅ | `cln.Withdraw` |
-| OpenChannel | ⚠️ Deferred | `cln.FundChannel` + scheduler coordination |
+| OpenChannel | ✅ | `cln.FundChannel` (regtest verified 2026-10-11; peer must be reachable from Blockstream infra on hosted) |
 | CloseChannel | ✅ | `cln.Close` (mutual; force works) |
-| ListChannels | ✅ | `cln.ListPeerChannels` |
+| ListChannels | ✅ | `cln.ListPeerChannels`; closed channels with all outputs resolved are hidden (LDK parity) |
 | ListPeers | ✅ | `cln.ListPeers` |
 | GetNodeStatus | ✅ | Watchdog cached verdict + signer status |
-| Backup / Restore | ✅ | .bkp includes SignerDataDir (seed + creds + backup.json) |
-| ResetRouter | ⚠️ Stub | Documented; needs scheduler-level migration |
+| Backup / Restore | ✅ | .bkp (AES-GCM authenticated, legacy OFB import) includes SignerDataDir (creds + backup.json) |
+| ResetRouter | ❌ N/A | Hosted node owns the graph; returns a clear error |
+| Custom node commands | ✅ | `resolve-payment` (manual reconcile of one pending payment) |
 | HoldInvoice / SettleHoldInvoice | ❌ Blocked | Needs `cln.HtlcAccepted` hook — no equivalent in `cln-grpc` or gl-client. Documented in KNOWN-ISSUES.md |
 | Subscribe events | ⚠️ Partial | `Subscribe*` streams panic the gl-plugin (CLN restricts them); incoming payments use `streamIncoming` instead |
 
@@ -194,18 +195,14 @@ unimplemented (they panic the gl-plugin process). `nwc_channel_ready/closed`
 notifications are not emitted; incoming payments are covered by the
 restart-safe pump instead.
 
-## 8. Signer seed at rest — PLAINTEXT (posture note, mainnet audit 2026-08-08)
+## 8. Signer seed at rest — MITIGATED
 
-The hub supervisor spawns `glcli signer run` directly, so the seed
-(`hsm_secret`) sits plaintext in the 0700 data dir while the hub is
-unlocked — the same posture as the hub's own LDK seed. An at-rest
-encryption wrapper exists (`lnclient/greenlight/signer/encrypt-seed.py` +
-`greenlight-signer-run.sh`, AES-256-GCM, for systemd deployments) but is
-not wired into the supervisor. Wiring it is a follow-up; for a single-user
-device deployment the 0700/0600 file perms match the rest of the wallet.
-Audit-verified clean: dataDir 0700, hsm_secret/signer.log/signer.pid 0600,
-device PEMs 0600, seed write-once (a different mnemonic can never desync
-the signer from the node), signer liveness tracks the live process.
+The mnemonic is stored encrypted in the hub DB (same as LDK). The signer's
+working `hsm_secret` exists only while the hub is unlocked and is deleted on
+stop (re-verified 2026-10-11). Data dir 0700; hsm_secret, credentials.gfs,
+device PEMs, signer.log/pid 0600; workdir, log dir 0700 and nwc.db 0600
+(patch/workdir-perms). No mnemonic, seed, password or key material found in
+logs on the reverification bench.
 
 See [ARCHITECTURE.md](../lnclient/greenlight/ARCHITECTURE.md) for the
 full design rationale (why we integrate through `glcli`, how GL primitives

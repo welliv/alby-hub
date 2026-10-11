@@ -20,7 +20,9 @@ public-network pilot is documented.
 | Pay / receive bolt11, keysend (regtest E2E) | Hold invoices (no plugins on hosted nodes) |
 | Channel open / close / peers | `sign_message` (blocked by Greenlight signer, GL#739) |
 | NWC apps, budgets, isolated wallets | Oblivious send (not shipped upstream) |
-| Hub backup / restore, convert-backup migrate-out | Hosted pay/receive/JIT (see blockers root-cause) |
+| Hub backup / restore (authenticated AES-GCM `.bkp`, legacy import) | Hosted pay/receive/JIT (see blockers root-cause) |
+| Migrate-out to self-hosted CLN (`scripts/greenlight/migrate-out.sh`, channels force-closed) | `glcli scheduler export` (keeps channels; not testable on gl-testserver, untested) |
+| One custom node command: `resolve-payment` | Paying BOLT12 offers (offer *creation* verified) |
 | | Reset local gossip router |
 
 ### Network notes (docs disagree — be careful)
@@ -45,10 +47,32 @@ watchdog logs "possible frozen node".
    (the Hub never calls `signmessage`).
 3. Meanwhile the Hub stays usable in degraded mode: apps, backups, and
    settings work; new Lightning payments will fail until the node returns.
-4. Escape hatch if Greenlight is permanently lost: Hub `.bkp` includes
+4. Escape hatch if Greenlight is permanently lost (see "Leaving Greenlight" below): Hub `.bkp` includes
    `backup.json` — convert with
    `glcli signer convert-backup --path backup.json --format cln`
    and recover on a self-hosted CLN (**only** after the Greenlight node is
    confirmed gone — see `docs/RUNBOOK.md`).
+
+## Leaving Greenlight
+
+Two paths exist:
+
+1. **Tested: SCB recovery to self-hosted CLN.** Stop Alby Hub, then run
+   `scripts/greenlight/migrate-out.sh` (env vars documented in the script). It
+   converts `backup.json` with `glcli signer convert-backup`, derives
+   `hsm_secret` from your mnemonic, starts `lightningd` with the **same node id**,
+   loads the stubs with `recoverchannel` and connects your peers. Peers
+   force-close; your balance arrives on-chain (after their CSV delay). Verified on
+   regtest 2026-10-11 (`verify/ev2/migrate-out.log`).
+2. **Official, untested: `glcli scheduler export`.** Greenlight's docs describe
+   exporting the node with its database so channels stay open. It makes the
+   hosted node permanently unschedulable and returns only a URL to an encrypted
+   database; the regtest gl-testserver does not implement it
+   (`NotImplementedError`), so we have not verified it. Ask Blockstream before
+   relying on it.
+
+Closed channels disappear from the channel list once all their on-chain outputs
+are resolved. Funds from your own force-close count as "pending from channel
+closures" until they are swept.
 
 Full operator detail: [`docs/RUNBOOK.md`](./RUNBOOK.md).
