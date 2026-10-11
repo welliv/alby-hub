@@ -15,12 +15,20 @@ public-network pilot is documented.
 
 ## What works / what doesn't
 
-| Works | Does not |
+| Works (regtest verified) | Does not / unverified on hosted |
 |---|---|
-| Pay / receive bolt11, keysend | Hold invoices |
-| Channel open / close / peers | `sign_message` (blocked by Greenlight signer) |
+| Pay / receive bolt11, keysend (regtest E2E) | Hold invoices (no plugins on hosted nodes) |
+| Channel open / close / peers | `sign_message` (blocked by Greenlight signer, GL#739) |
 | NWC apps, budgets, isolated wallets | Oblivious send (not shipped upstream) |
-| Hub backup / restore, convert-backup migrate-out | Reset local gossip router |
+| Hub backup / restore, convert-backup migrate-out | Hosted pay/receive/JIT (see blockers root-cause) |
+| | Reset local gossip router |
+
+### Network notes (docs disagree — be careful)
+
+- **gl-cli README / CLI help:** supported networks are `bitcoin` and `signet`; "we do not support `testnet` at the moment."
+- **Official docs Register page:** "chose between the following networks: `testnet` `bitcoin`."
+- **Root greenlight README (stale):** lists `bitcoin`, `testnet`, `regtest` and says signet is planned.
+- In practice (2026-10): **testnet3** register/getinfo/invoice work with a developer cert; **hosted pay** currently fails (`no response from lightningd`). **Signet** register/schedule return a URI but node connect gets TLS alert **225** (SchedulerError).
 
 ## Stuck or frozen node
 

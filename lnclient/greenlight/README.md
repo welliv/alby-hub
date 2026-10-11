@@ -76,12 +76,12 @@ GREENLIGHT_NODE_URI=gl1<node_id>.nodes.gl.blckstrm.com:443
 
 | Area | LDK | Greenlight |
 |---|---|---|
-| Pay / keysend result | sync, plus events | sync, plus reconciler events (same hub semantics) |
+| Pay / keysend result | sync, plus events | sync, plus reconciler events (regtest verified; **hosted pay currently broken** — see blockers root-cause) |
 | Payment received / sent notifications | yes | yes |
 | Hold invoices | yes | **no**: hosted nodes run no plugins |
 | sign_message | yes | **no**: intentionally blocked by the Greenlight signer (GL#739, by design); older node stacks wedged on it |
 | Channel ready/closed notifications | yes | **no**: GL leaves Subscribe* unimplemented |
-| Open channel manually | yes | deferred (LSP opens channels on demand) |
+| Open channel manually | yes | yes (`FundChannel`/`Close`; peer must be reachable from Blockstream infra) |
 | ResetRouter | yes | not applicable (the node owns the graph) |
 | Node availability | local | depends on Blockstream; a frozen node needs their restart |
 | Backup | seed + VSS | mnemonic in encrypted DB; `backup.json` SCB once channels exist |
