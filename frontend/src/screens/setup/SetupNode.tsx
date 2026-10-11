@@ -16,7 +16,6 @@ const backendTypeDisplayConfigList = Object.entries(backendTypeConfigs).map(
   })
 );
 
-
 export function SetupNode() {
   const navigate = useNavigate();
   const setupStore = useSetupStore();

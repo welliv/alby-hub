@@ -43,8 +43,8 @@ export function SetupRecover() {
           >
             <span className="flex flex-col items-start gap-1 text-left w-full">
               <span className="flex items-center gap-2 font-medium">
-                <KeyRoundIcon className="size-4 shrink-0" />
-                I have my recovery phrase
+                <KeyRoundIcon className="size-4 shrink-0" />I have my recovery
+                phrase
               </span>
               <span className="text-xs font-normal opacity-90 pl-6">
                 12 words restore your Greenlight node while Greenlight is
