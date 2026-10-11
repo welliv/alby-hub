@@ -260,11 +260,13 @@ export default function Channels() {
                         Connected Peers
                       </Link>
                     </DropdownMenuItem>
-                    <DropdownMenuItem>
-                      <Link className="w-full" to="/wallet/sign-message">
-                        Sign Message
-                      </Link>
-                    </DropdownMenuItem>
+                    {info?.backendType !== "GREENLIGHT" && (
+                      <DropdownMenuItem>
+                        <Link className="w-full" to="/wallet/sign-message">
+                          Sign Message
+                        </Link>
+                      </DropdownMenuItem>
+                    )}
                     {info?.backendType === "LDK" && (
                       <ProDropdownMenuItem
                         onClick={() => navigate("/wallet/node-alias")}
@@ -553,7 +555,11 @@ export default function Channels() {
             <EmptyState
               icon={UnplugIcon}
               title="No Channels Available"
-              description="Connect to the Lightning Network by establishing your first channel and start transacting."
+              description={
+                info?.backendType === "GREENLIGHT"
+                  ? "Your Greenlight node has no channels yet. Open a channel to send and receive Lightning payments."
+                  : "Connect to the Lightning Network by establishing your first channel and start transacting."
+              }
               variant="dashed"
               buttonText="Open Channel"
               buttonLink="/channels/incoming"

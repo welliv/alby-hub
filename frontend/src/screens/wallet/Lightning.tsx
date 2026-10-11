@@ -41,6 +41,12 @@ export default function Lightning() {
     channels &&
     !hasChannelsOpen &&
     !(info?.jitChannelsEnabled && info?.jitChannelsLiquiditySource);
+  // Alby LSP first-channel wizard is account-oriented; Greenlight/CLN-style
+  // nodes open channels via Node (incoming capacity / peers).
+  const firstChannelPath =
+    info?.backendType === "GREENLIGHT" || !info?.albyAccountConnected
+      ? "/channels"
+      : "/channels/first";
 
   return (
     <>
@@ -63,13 +69,34 @@ export default function Lightning() {
       {showOpenFirstChannel && (
         <Alert>
           <AlertTriangleIcon className="h-4 w-4" />
-          <AlertTitle>Open Your First Channel</AlertTitle>
+          <AlertTitle>
+            {info?.backendType === "GREENLIGHT"
+              ? "No Lightning channels yet"
+              : "Open Your First Channel"}
+          </AlertTitle>
           <AlertDescription className="inline">
-            You won't be able to receive or send payments until you{" "}
-            <Link className="underline" to="/channels/first">
-              open your first channel
-            </Link>
-            .
+            {info?.backendType === "GREENLIGHT" ? (
+              <>
+                Your Greenlight node is online. Inbound channels are provisioned
+                automatically by the platform.{" "}
+                <Link className="underline" to="/channels">
+                  View channel status
+                </Link>{" "}
+                or{" "}
+                <Link className="underline" to="/channels?tab=onchain">
+                  open an outbound channel
+                </Link>
+                .
+              </>
+            ) : (
+              <>
+                You won't be able to receive or send payments until you{" "}
+                <Link className="underline" to={firstChannelPath}>
+                  open your first channel
+                </Link>
+                .
+              </>
+            )}
           </AlertDescription>
         </Alert>
       )}

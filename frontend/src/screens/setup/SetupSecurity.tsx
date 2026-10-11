@@ -148,6 +148,18 @@ export function SetupSecurity() {
                 choose the LDK node type.
               </span>
             </div>
+          ) : store.nodeInfo.backendType === "GREENLIGHT" ? (
+            <div className="flex gap-3 items-center">
+              <div className="shrink-0">
+                <ShieldAlertIcon className="size-6" />
+              </div>
+              <span className="text-sm text-muted-foreground">
+                Your 12-word recovery phrase restores access to your Greenlight
+                node. Save a Hub backup before moving devices to keep app
+                connections. Channels live on Greenlight until you leave
+                Greenlight (advanced).
+              </span>
+            </div>
           ) : store.hasImportedMnemonic &&
             store.nodeInfo.backendType === "LDK" ? (
             <div className="flex gap-3 items-center">
@@ -161,7 +173,7 @@ export function SetupSecurity() {
                 before proceeding.
               </span>
             </div>
-          ) : (
+          ) : store.nodeInfo.backendType === "BARK" ? null : (
             <div className="flex gap-3 items-center">
               <div className="shrink-0">
                 <ShieldAlertIcon className="size-6" />
