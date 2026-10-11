@@ -67,8 +67,10 @@ func NewService(ctx context.Context) (*service, error) {
 		appConfig.Workdir = filepath.Join(xdg.DataHome, "/albyhub")
 		logger.Logger.WithField("workdir", appConfig.Workdir).Info("No workdir specified, using default")
 	}
-	// make sure workdir exists
-	os.MkdirAll(appConfig.Workdir, os.ModePerm)
+	// make sure workdir exists, private to the hub user
+	if err := os.MkdirAll(appConfig.Workdir, 0o700); err != nil {
+		return nil, err
+	}
 
 	if appConfig.LogToFile {
 		err = logger.AddFileLogger(appConfig.Workdir)
@@ -90,6 +92,10 @@ func NewService(ctx context.Context) (*service, error) {
 		if databasePath == "" {
 			appConfig.DatabaseUri = filepath.Join(appConfig.Workdir, appConfig.DatabaseUri)
 		}
+	}
+
+	if err := hardenWorkdirPerms(appConfig.Workdir, appConfig.DatabaseUri); err != nil {
+		logger.Logger.WithError(err).Warn("failed to restrict workdir permissions")
 	}
 
 	gormDB, err := db.NewDB(appConfig.DatabaseUri, appConfig.LogDBQueries)
