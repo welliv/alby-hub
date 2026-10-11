@@ -177,3 +177,12 @@ func TestValidateInvoiceDescription(t *testing.T) {
 		t.Fatalf("long description with description_hash must be allowed: %v", err)
 	}
 }
+
+func TestDecodeLspInvoiceResponseRejectsOversizedExpiry(t *testing.T) {
+	b := protowire.AppendTag(nil, 3, protowire.VarintType)
+	b = protowire.AppendVarint(b, 1<<32+5) // would truncate to 5
+	var resp lspInvoiceResponse
+	if err := resp.decode(b); err == nil {
+		t.Fatalf("expected out-of-range error, got ExpiresAt=%d", resp.ExpiresAt)
+	}
+}

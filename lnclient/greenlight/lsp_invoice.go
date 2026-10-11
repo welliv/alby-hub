@@ -121,7 +121,11 @@ func (r *lspInvoiceResponse) decode(data []byte) error {
 				return protowire.ParseError(n)
 			}
 			data = data[n:]
-			r.ExpiresAt = uint32(v)
+			// proto field is uint32: a larger varint is malformed, never truncate
+			if v > 0xFFFFFFFF {
+				return fmt.Errorf("lsp invoice expires_at out of range: %d", v)
+			}
+			r.ExpiresAt = uint32(v) // #nosec G115 -- bounded above
 		case num == 4 && typ == protowire.BytesType:
 			v, n := protowire.ConsumeBytes(data)
 			if n < 0 {
