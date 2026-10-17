@@ -4,9 +4,9 @@ These are the descriptions for the four upstream PRs to getAlby/hub. **None has 
 
 | PR | Branch → base | Commit |
 |---|---|---|
-| PR 1 | `pr/1-greenlight-backend` → base `getAlby/hub` `master` (branched from ce1cd798). Open first. | `f204eff5` |
-| PR 2 | `pr/2-setup-recover-ui` → stacked on PR 1 (open with base `pr/1-greenlight-backend`, or retarget to `master` after PR 1 merges). | `9ea5985b` |
-| PR 3 | `pr/3-lsp-jit` → stacked on PR 1 (same as PR 2). | `6d07934a` |
+| PR 1 | `pr/1-greenlight-backend` → base `getAlby/hub` `master` (branched from ce1cd798). Open first. | `048c976f` |
+| PR 2 | `pr/2-setup-recover-ui` → stacked on PR 1 (open with base `pr/1-greenlight-backend`, or retarget to `master` after PR 1 merges). | `06b98ebf` |
+| PR 3 | `pr/3-lsp-jit` → stacked on PR 1 (same as PR 2). | `ad0abab3` |
 | PR 4 | `pr/4-backup-aead` → base `getAlby/hub` `master` (ce1cd798). Independent of Greenlight; can be opened any time. | `25ddd28d` |
 
 ---
