@@ -12,6 +12,9 @@ Prepared 2026-10-17 (UTC). Nothing here has touched mainnet yet: no node, seed o
 | setup.sh | Creates the isolated mainnet workdir, `trial.env`, `run.sh` (clean env) and `check.sh` |
 | build.sh | Builds the hub (frontend + Go, CGO) on Linux or macOS; WSL2 for Windows |
 | tools/nwc.mjs | Minimal NWC client for steps 6–7 (secret read from stdin) |
+| tools/l402.mjs | L402 client for step 7A: pays through an NWC connection (secret from stdin), checks the preimage, presents the macaroon/token; `--dry-run` never pays |
+| tools/l402-mock.mjs | Fallback L402 endpoint on loopback; invoices come from your own Lightning address |
+| tools/l402-selftest.mjs | Offline test of both L402 tools (fake invoices, fake hub budget); no network, no money |
 | tools/redact.py | Scrubs logs before publishing (secrets, IPs, paths; offsets converted to UTC) |
 
 No binaries are published. You build from this repo.
@@ -20,14 +23,14 @@ No binaries are published. You build from this repo.
 ```bash
 git clone https://github.com/welliv/alby-hub && cd alby-hub
 git checkout trial/mainnet && git log -1 --format=%H     # 15b9ef0b6204bc0e83880084e0d25e41499630fe
-# or: git checkout feat/greenlight-backend && git diff --quiet 15b9ef0b HEAD -- . ':(exclude)docs/greenlight' && echo same-code
+# or: git checkout feat/greenlight-backend && git diff --quiet 15b9ef0b HEAD -- . ':(exclude)docs/greenlight' ':(exclude)AGENTS.md' && echo same-code
 export ALBYHUB=$(pwd) KIT=$(pwd)/docs/greenlight/mainnet-trial
 # glcli 0.1.3 from Blockstream's repo at the tested commit (crates.io 0.1.1 is too old):
 cargo install --locked --git https://github.com/Blockstream/greenlight --rev 15b22cf0f9b07bd0d343133d593c92b78addc403 gl-cli
 $KIT/build.sh . ../hub-bin                               # Go >= 1.26.9, Node >= 22.12, yarn 1, a C compiler
 $KIT/setup.sh --bin-dir ../hub-bin --cert-dir /path/to/your/devcert --dry-run
 ```
-Then read PLAN.md and CHECKLIST.md and start at step 0. Step 1.3 registers the node before any money goes in and settles whether the developer certificate works on mainnet.
+Then read PLAN.md and CHECKLIST.md and start at step 0. If a coding agent helps, start with [../AGENTS.md](../AGENTS.md) and [../START-PROMPT.md](../START-PROMPT.md). Step 1.3 registers the node before any money goes in and settles whether the developer certificate works on mainnet.
 
 Branch commits (code identical to what the kit was reviewed against):
 | Branch | Commit |

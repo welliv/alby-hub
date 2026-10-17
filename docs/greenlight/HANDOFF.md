@@ -34,7 +34,7 @@ Honest trade-offs: Blockstream can see payment metadata (channels, amounts, dest
 ## 4. Branch map (welliv/alby-hub)
 | Branch | Commit | What it is |
 |---|---|---|
-| `feat/greenlight-backend` | this branch | `trial/mainnet` + `docs/greenlight/` (this handoff). Code outside `docs/greenlight/` is identical to `trial/mainnet`. |
+| `feat/greenlight-backend` | this branch | `trial/mainnet` + `docs/greenlight/` (this handoff). Code outside `docs/greenlight/` is identical to `trial/mainnet`, apart from a 3-line pointer at the top of the root `AGENTS.md` (a doc file). |
 | `trial/mainnet` | `15b9ef0b` | `release/greenlight` + 3 mainnet-safety fixes. **Build this for the trial.** |
 | `release/greenlight` | `960a47de` | The integrated, fully tested release branch (backend + UI + JIT + AEAD backups + perms). |
 | `pr/1-greenlight-backend` | `f204eff5` | PR 1: backend without JIT (base getAlby/hub `master` ce1cd798). |
@@ -45,8 +45,11 @@ Honest trade-offs: Blockstream can see payment metadata (channels, amounts, dest
 The PR descriptions are in [PR-DESCRIPTIONS.md](PR-DESCRIPTIONS.md). Note: the trial kit sent earlier as file parts referred to `27fb8c90` / `48d36024`; those are the same trees as `15b9ef0b` / `960a47de` (only commit timestamps' zone offsets were normalised to UTC before publishing). Check with `git rev-parse 15b9ef0b^{tree}`.
 
 ## 5. What remains, in order (definition of done)
+0. **If a coding agent helps:** it reads [AGENTS.md](AGENTS.md) first (binding rules: it never sees the phrase, cert key or NWC URLs, and never moves money without your GO); paste [START-PROMPT.md](START-PROMPT.md) as its first prompt; set up isolation with [TOOL-CONFIGS.md](TOOL-CONFIGS.md). What "done" means at each level is in [SUCCESS-CRITERIA.md](SUCCESS-CRITERIA.md).
 1. **Run the capped mainnet trial.** Follow [mainnet-trial/README.md](mainnet-trial/README.md), [PLAN.md](mainnet-trial/PLAN.md) and [CHECKLIST.md](mainnet-trial/CHECKLIST.md): fresh seed, ≤ 25k sats planned, 50k hard cap, stop at the first problem. Build from this repo; run on a machine you own; never paste a seed, certificate key or NWC secret anywhere.
-   - Done when: every step is PASS / N/A / STOPPED with a reason, and all funds are withdrawn and reconciled.
+   - Includes step 7A: an agent buys L402 pay-per-call API calls through a pay-only NWC connection with a hub-enforced budget (public L402 services, or the `tools/l402-mock.mjs` fallback).
+   - NWC connection URLs are spending secrets: delivered as a file only the agent's Linux user can read, never in chat, the repo, logs or evidence; revoked at the end of each step and of the trial; created new on the restored hub.
+   - Done when: every step is PASS / N/A / STOPPED with a reason, and all funds are withdrawn and reconciled (pass/fail detail: [SUCCESS-CRITERIA.md](SUCCESS-CRITERIA.md) level A).
 2. **Publish the evidence.** Fill [EVIDENCE-TEMPLATE.md](mainnet-trial/EVIDENCE-TEMPLATE.md) (UTC only, logs through `tools/redact.py`, read before publishing). Add it to the public gist and comment on #751 (and #750/#752 if relevant) with the results. Optional: a 2-minute demo video of a real mainnet payment and an agent hitting its budget.
 3. **Post the Alby discussion** in getAlby/hub, tagging **only @rolznz**: the why, the evidence link, and the ask for a yes to Greenlight as an opt-in, experimental backend.
 4. **Open the 4 PRs** to getAlby/hub after that yes: PR 1 first; PR 2 and PR 3 stacked on PR 1; PR 4 independent. Use [PR-DESCRIPTIONS.md](PR-DESCRIPTIONS.md); update the "Not verified" sections with the trial results.
@@ -62,14 +65,19 @@ The PR descriptions are in [PR-DESCRIPTIONS.md](PR-DESCRIPTIONS.md). Note: the t
 | File | Purpose |
 |---|---|
 | HANDOFF.md | This file |
+| AGENTS.md | Binding rules for a coding agent working on this (Claude Code reads it through `CLAUDE.md`) |
+| CLAUDE.md | One-line import of AGENTS.md for Claude Code |
+| START-PROMPT.md | The first prompt to paste into a local coding agent |
+| TOOL-CONFIGS.md | Separate OS user, NWC secret delivery, log bridge, per-tool settings (Claude Code, Codex, Cursor, Gemini, Aider) |
+| SUCCESS-CRITERIA.md | Pass/fail definition of done: trial, ship, mission; kill and pause criteria |
 | ONE-PAGER.md | The pitch: why, the agent/app angle, what Blockstream can and can't see, status, asks |
 | AUDIT-SUMMARY.md | Findings, fixes and tests; the 9 corrections; known limits |
 | PR-DESCRIPTIONS.md | Drafts for the 4 upstream PRs (none opened) |
-| mainnet-trial/ | The trial kit: plan, checklist, risks, evidence template, setup/build scripts, tools |
+| mainnet-trial/ | The trial kit: plan (including step 7A, L402), checklist, risks, evidence template, setup/build scripts, tools (`nwc.mjs`, `l402.mjs`, `l402-mock.mjs`, `redact.py`) |
 
 ## 8. Quick verification from a fresh clone
 ```bash
 git clone https://github.com/welliv/alby-hub && cd alby-hub && git checkout feat/greenlight-backend
-git diff --quiet 15b9ef0b HEAD -- . ':(exclude)docs/greenlight' && echo same-code-as-trial
+git diff --quiet 15b9ef0b HEAD -- . ':(exclude)docs/greenlight' ':(exclude)AGENTS.md' && echo same-code-as-trial
 go test ./lnclient/greenlight/...    # backend unit, adversarial and fuzz-seed tests
 ```

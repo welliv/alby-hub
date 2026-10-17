@@ -18,7 +18,7 @@ Rule for the whole trial: **at any STOP condition, stop testing, write down what
 | 0.2 | **No other Alby Hub or glcli signer** is running on this machine, and none ever runs against the trial node at the same time as the trial hub. | `pgrep -fa "glcli.*signer run"` prints nothing. |
 | 0.3 | **Developer certificate** from the Greenlight Developer Console (`client.crt`, `client-key.pem`) is in a private folder, outside any git repo. | `ls -l` shows your user only. Never paste, print or screenshot `client-key.pem`. |
 | 0.4 | **glcli built from the tested commit.** crates.io only has gl-cli 0.1.1, which lacks `signer run --backup-path`, and the hub refuses it. | `cargo install --locked --git https://github.com/Blockstream/greenlight --rev 15b22cf0f9b07bd0d343133d593c92b78addc403 gl-cli` then `glcli signer run --help \| grep -- --backup-path`. Record `sha256sum $(command -v glcli)`. This is the commit the regtest/testnet work used. Use `origin/main` only if Greenlight rejects this signer as too old, and note it in the report. |
-| 0.5 | **Hub binary: build it yourself from this repo.** No prebuilt binary is published. | `git clone https://github.com/welliv/alby-hub && cd alby-hub && git checkout trial/mainnet && git log -1 --format=%H` → `15b9ef0b6204bc0e83880084e0d25e41499630fe`. (Or check out `feat/greenlight-backend`; then `git diff --quiet 15b9ef0b HEAD -- . ':(exclude)docs/greenlight' && echo same-code` must print `same-code`.) Then `docs/greenlight/mainnet-trial/build.sh . ../hub-bin` (needs Go ≥ 1.26.9, a C compiler, Node ≥ 22.12, yarn 1). `build.sh` refuses a dirty tree and writes `BUILDINFO.txt` and `SHA256SUMS`. Checksums are not bit-reproducible across machines; the commit hash is what you verify. |
+| 0.5 | **Hub binary: build it yourself from this repo.** No prebuilt binary is published. | `git clone https://github.com/welliv/alby-hub && cd alby-hub && git checkout trial/mainnet && git log -1 --format=%H` → `15b9ef0b6204bc0e83880084e0d25e41499630fe`. (Or check out `feat/greenlight-backend`; then `git diff --quiet 15b9ef0b HEAD -- . ':(exclude)docs/greenlight' ':(exclude)AGENTS.md' && echo same-code` must print `same-code`.) Then `docs/greenlight/mainnet-trial/build.sh . ../hub-bin` (needs Go ≥ 1.26.9, a C compiler, Node ≥ 22.12, yarn 1). `build.sh` refuses a dirty tree and writes `BUILDINFO.txt` and `SHA256SUMS`. Checksums are not bit-reproducible across machines; the commit hash is what you verify. |
 | 0.6 | **A second Lightning wallet you control** on mainnet, holding about 30,000 sats. It must pay invoices and create invoices. Keysend support is a bonus. | You can create an invoice in it and see its balance. |
 | 0.7 | **An on-chain address you control** for the final withdrawal, from a wallet other than the hub. | Write it down. Check that it starts with `bc1`. |
 | 0.8 | **Paper and pen** for the new 12-word recovery phrase. It's a new seed: never reuse a testnet phrase, and never type it into chat, email or screenshots. | — |
@@ -32,6 +32,7 @@ Rule for the whole trial: **at any STOP condition, stop testing, write down what
 | LSP minimum payment for a JIT channel | ~2,501 | Seen live on Greenlight **testnet** (2026-10); mainnet unknown until step 3.1 |
 | LSP opening fee | ~2,500 | Testnet observation. Mainnet unknown. The hub refuses quotes above **5,000** (`GREENLIGHT_JIT_MAX_FEE_SAT`) |
 | Test spending (pays, keysend, NWC) | ~3,000 | Steps 4–7. Mostly returns to your second wallet |
+| L402 pay-per-call (step 7A) | ~25–100 | 1–10 sats per call plus routing fees; the mock fallback pays your own second wallet |
 | Channel reserve (locked until close) | ~1% of channel size | CLN default |
 | On-chain withdraw fee | 300–3,000 | Depends on mempool fee rate at step 11 |
 
@@ -74,6 +75,21 @@ Settings → Backup: export the encrypted `.bkp` file to a second private locati
 
 ---
 
+## NWC connection URLs (rules for the whole trial)
+A `nostr+walletconnect://` connection URL is a **spending secret**: anyone holding it can spend up to its budget.
+- Copy it from the hub UI straight into a file, by pasting into stdin, never as a command-line argument.
+  If a coding agent runs the step, the file goes in the agent's own home and is readable **only by the
+  agent's Linux user**: `sudo -u <agent-user> -H sh -c 'umask 077; mkdir -p ~/.nwc; cat > ~/.nwc/<name>.secret'`
+  (paste, Enter, Ctrl-D). Without an agent, use `~/.config/gl-trial-nwc/<name>.secret` (folder 0700).
+  In the steps below, `<nwcdir>` means whichever of those two folders you use.
+- **Never** put it in chat, the repo, shell history, logs, `<workdir>/evidence/`, screenshots or the report.
+  Tools read it from stdin only (`tools/nwc.mjs`, `tools/l402.mjs`).
+- **Revoke** each connection (Apps → connection → Delete) when its step ends, then `shred -u` the file.
+  At trial end (step 13) no connection may remain.
+- **Restored hub:** connections live in the hub's database. Before retiring hub A (10.1) delete all of
+  its connections; create any connection you still need **new** on hub B. Never reuse a hub A URL.
+- If a URL ever leaks: delete that connection at once, then record it as a finding.
+
 ## 2. Rules during funded steps
 - Keep the `run.sh` terminal open and the machine awake.
 - One action at a time. Wait for each result before the next.
@@ -108,15 +124,15 @@ Check the Channels page: inbound (receiving) capacity must be ≥ 4,000 sats. Th
 - **STOP if** the hub quotes a JIT fee. That means inbound was too small. Let the invoice expire and skip this step.
 
 ## 6. Keysend (optional; needs a keysend-capable node you control; do it after 7.1)
-The hub UI has no keysend form, so this uses NWC. Create a second connection `trial-keysend`: budget **1,000 sats**, permission "pay keysend" only, secret saved to `<workdir>/evidence/nwc-keysend.secret` (`chmod 600`). Then run:
-`HUB_SRC=$ALBYHUB node $KIT/tools/nwc.mjs payKeysend '{"amount":500000,"pubkey":"<destination node id>"}' < <workdir>/evidence/nwc-keysend.secret` (the amount is in msat, so this is 500 sats). Delete the connection afterwards.
+The hub UI has no keysend form, so this uses NWC. Create a second connection `trial-keysend`: budget **1,000 sats**, permission "pay keysend" only, secret saved to `<nwcdir>/trial-keysend.secret` (see "NWC connection URLs"). Then run:
+`HUB_SRC=$ALBYHUB node $KIT/tools/nwc.mjs payKeysend '{"amount":500000,"pubkey":"<destination node id>"}' < <nwcdir>/trial-keysend.secret` (the amount is in msat, so this is 500 sats). Delete the connection afterwards and shred the file.
 - **Expected:** `ok: true` and the destination sees 500 sats. **Evidence:** amount, fee, UTC time. If you have no keysend target, mark it N/A.
 - **STOP if** it's pending more than 2 minutes (go to F1).
 
 ## 7. App connection (NWC) with a small budget, overspend attempt, revoke
-**7.1** Apps → Add connection, named `trial-agent`. Budget **1,000 sats**, renewal monthly. Permissions: pay invoice, get balance, get info, make invoice, lookup invoice, list transactions. Copy the connection secret into `<workdir>/evidence/nwc.secret` (`chmod 600`). **Never** paste it in chat or a screenshot.
+**7.1** Apps → Add connection, named `trial-agent`. Budget **1,000 sats**, renewal monthly. Permissions: pay invoice, get balance, get info, make invoice, lookup invoice, list transactions. Save the connection URL to `<nwcdir>/trial-agent.secret` (see "NWC connection URLs"). **Never** paste it in chat, a log or a screenshot.
 
-**7.2** `HUB_SRC=$ALBYHUB node $KIT/tools/nwc.mjs getInfo '{}' < <workdir>/evidence/nwc.secret` and `getBudget`.
+**7.2** `HUB_SRC=$ALBYHUB node $KIT/tools/nwc.mjs getInfo '{}' < <nwcdir>/trial-agent.secret` and `getBudget`.
 - **Expected:** network `bitcoin` and a budget of 1,000.
 
 **7.3** Two in-budget payments: create two **300-sat** invoices in the second wallet, then run `HUB_SRC=$ALBYHUB node $KIT/tools/nwc.mjs payInvoice '{"invoice":"lnbc..."}' < …secret` for each.
@@ -126,10 +142,44 @@ The hub UI has no keysend form, so this uses NWC. Create a second connection `tr
 - **Expected:** refused with `QUOTA_EXCEEDED`, because 600 used + 400 + a 10-sat fee reserve is over 1,000. The second wallet must **not** receive it.
 - **STOP (critical) if** it succeeds or the second wallet receives anything beyond budget. Then stop all tests and go straight to step 11.
 
-**7.5** Revoke: Apps → `trial-agent` → Delete. Run `getInfo` again with the same secret.
+**7.5** Revoke: Apps → `trial-agent` → Delete. Run `getInfo` again with the same secret, then `shred -u <nwcdir>/trial-agent.secret`.
 - **Expected:** an error or no answer; the old secret no longer works. The hub UI still works.
 - **Evidence:** the JSON outputs. They're already free of secrets, but still run them through `tools/redact.py`. Add an Apps screenshot showing budget used.
 - **STOP if** the revoked secret still works.
+
+## 7A. L402 pay-per-call with a pay-only connection (the AI-agent use case)
+An agent buys API calls over Lightning: the service answers HTTP 402 with an invoice and a macaroon (or token); the agent pays, then repeats the request with `Authorization: L402 <macaroon>:<preimage>`. The hub's budget is what limits the agent. Client: `tools/l402.mjs` (one payment per run, never retried; it checks the invoice is `lnbc`, has an amount and is within `--max-sats` before paying, then checks `sha256(preimage) == payment_hash` before showing the token).
+
+**Services** (checked 2026-10-17 by free 402 challenges only, nothing paid; re-check with 7A.0 on the day):
+| Service | Call | Price | Challenge |
+|---|---|---|---|
+| Lightning Enable test endpoint (primary) | `GET https://api.lightningenable.com/l402/test/ping` | 1 sat | `L402 macaroon=… invoice=…`; macaroon bound to the payment hash, caveats `path`, `amount_sats = 1`, expiry |
+| major-miners L402 fee oracle (second) | `POST https://api.major-miners.com/api/fees` body `{}` | 10 sats | Aperture-style binary macaroon bound to the payment hash; sends both `LSAT` and `L402` headers |
+| Fallback: your own mock | `node $KIT/tools/l402-mock.mjs --ln-address <your second wallet's Lightning address> --price-sats 5` → `GET http://127.0.0.1:8402/l402/ping` | 5 sats (yours) | HMAC-signed token bound to the payment hash; invoices come from your second wallet, so the sats come back to you. Keep the Lightning address out of evidence |
+
+Other directories if both are down: https://402index.io/api/v1/services?protocol=l402&health=healthy, https://satring.com/directory?protocol=L402&status=live, https://l402.directory/api/services. Two services listed elsewhere (`l402.nosaltres2.info`, `l402.jeletor.cc`) failed to create invoices when checked. **x402 is out of scope:** it settles mostly USDC/ERC-20 on Base, Polygon or Solana through facilitators; it has a Lightning (`lnbtc`) variant, but the live services and hosted facilitators are stablecoin rails, and its proof of payment isn't a preimage the hub can check.
+
+**7A.0 Challenge check (free, nothing paid).** `node $KIT/tools/l402.mjs https://api.lightningenable.com/l402/test/ping --dry-run --expect-sats 1` and `node $KIT/tools/l402.mjs https://api.major-miners.com/api/fees --method POST --body '{}' --dry-run --expect-sats 10 --max-sats 10`.
+- **Expected:** `ok: true`, `status_challenge: 402`, `invoice_network: "bc"`, the expected price, `credential_binds_hash: true`. If a service fails, use the next one or the mock.
+
+**7A.1 Connection.** Apps → Add connection `trial-l402`. Permissions: **pay invoice, get balance, lookup invoice only** (get info and get budget are always granted). No make invoice, no list transactions, no sign message, and never the create-connections (superuser) permission. Budget **20,000 sats**, renewal **never**. Save the URL to `<nwcdir>/trial-l402.secret`. If an agent runs 7A, tell it "GO step 7A" now.
+- Note: 20,000 is more than the node holds at this point, so the channel balance, not the budget, would stop runaway spending until 7A.4 lowers it.
+
+**7A.2 Baseline.** `HUB_SRC=$ALBYHUB node $KIT/tools/nwc.mjs getBudget '{}' < <nwcdir>/trial-l402.secret`. Record `used_budget` (msat).
+
+**7A.3 Paid calls, one at a time** (at least 3 calls across at least 2 services):
+`HUB_SRC=$ALBYHUB node $KIT/tools/l402.mjs https://api.lightningenable.com/l402/test/ping --expect-sats 1 < <nwcdir>/trial-l402.secret` (twice), then
+`HUB_SRC=$ALBYHUB node $KIT/tools/l402.mjs https://api.major-miners.com/api/fees --method POST --body '{}' --expect-sats 10 --max-sats 10 < <nwcdir>/trial-l402.secret`.
+- **Expected per call:** `ok: true`, `paid: true`, `preimage_ok: true`, `status_after` 2xx, and `budget_after.used_budget − budget_before.used_budget` = price × 1000 + `fees_paid_msat` (± 1 sat).
+- If the hub paid and `preimage_ok` is true but the service rejects the token: record a **service** failure, never pay that invoice again, and use the next service or the mock.
+- **STOP if** `preimage_ok: false`, or a payment is pending for more than 2 minutes (F1).
+
+**7A.4 Budget exceeded.** Read `used_budget` with `getBudget` (U sats, rounded down). Apps → `trial-l402` → edit the budget to **U + 15 sats** (operator only; if the UI can't edit a budget, create `trial-l402-cap` with a 15-sat budget and the same permissions, and use its URL for this step). Then run the 1-sat ping (allowed: 1 + the 10-sat fee reserve = 11 ≤ 15), then the 10-sat call (needs 10 + 10 = 20 > the ~14 left).
+- **Expected:** the 1-sat call succeeds; the 10-sat call returns `paid: false`, `error_code: "QUOTA_EXCEEDED"`; `nwc.mjs lookupInvoice '{"payment_hash":"<hash from that output>"}'` finds no settled payment.
+- **STOP (critical) if** the 10-sat call is paid. Stop all tests and go to step 11.
+
+**7A.5 Revoke.** Apps → `trial-l402` (and `trial-l402-cap`) → Delete. Run `nwc.mjs getInfo` with the old URL: it must fail. Then `shred -u <nwcdir>/trial-l402.secret`. Stop the mock if you used it.
+- **Evidence:** the `l402.mjs` JSON lines (they print no preimage and no full macaroon; still run them through `tools/redact.py`), the services used, prices, payment hashes, fees and budget deltas.
 
 ## 8. Pending or unclear payment (only if it happens naturally)
 If any payment shows **pending**, see F1. Record whether the reconciler resolved it on its own (it checks every 20 s; a payment with no record on the node is failed after 10 min), whether you needed `resolve-payment`, and whether the final state matched what the other wallet saw. This is valuable evidence. Never create one on purpose with real funds.
@@ -144,12 +194,12 @@ If any payment shows **pending**, see F1. Record whether the reconciler resolved
 - **STOP if** a channel closes.
 
 ## 10. Backup and restore (second workdir, same machine)
-**10.1** Stop hub A (Ctrl-C) and confirm no signer is running.
+**10.1** While hub A is still running (and nothing else is), delete **all** of its app connections (Apps) and shred their secret files. Then stop hub A (Ctrl-C) and confirm no signer is running. Never start hub A again while hub B exists.
 **10.2** `$KIT/setup.sh --bin-dir … --cert-dir … --glcli … --workdir ~/albyhub-greenlight-mainnet-restore --port 8030`, then run its `run.sh`. In the UI, choose to import an existing wallet: enter the **12-word phrase** and choose Greenlight. The hub then runs register, which fails because the node exists, and falls back to recover.
 - **Expected:** the **same node pubkey** as hub A. The channel and Lightning balance are visible. A 100-sat payment works.
 - **Alternative:** restore the `.bkp` from step 1.5 with the unlock password. Do it only if the phrase route fails, and record which route worked.
 - **STOP if** the pubkey differs. A mistyped phrase registers a **new, empty** node: stop B, then re-check the phrase.
-**10.3** From now on use **hub B only**. Retire A so it can't start by accident: `rm ~/albyhub-greenlight-mainnet-trial/run.sh && mv ~/albyhub-greenlight-mainnet-trial ~/albyhub-greenlight-mainnet-trial.RETIRED`. Greenlight's docs allow several signers, but the two hub databases would diverge.
+**10.3** From now on use **hub B only**. Hub A's connections were deleted in 10.1. On hub B, create new connections only as needed (for example a new observer); never reuse a hub A URL. Retire A so it can't start by accident: `rm ~/albyhub-greenlight-mainnet-trial/run.sh && mv ~/albyhub-greenlight-mainnet-trial ~/albyhub-greenlight-mainnet-trial.RETIRED`. Greenlight's docs allow several signers, but the two hub databases would diverge.
 
 ## 11. Exit: get every sat out
 **11.1** The funding tx needs ≥ 3 confirmations.
@@ -172,6 +222,7 @@ Stop hub B, then run `glcli -n bitcoin -d ~/albyhub-greenlight-mainnet-restore/g
 **Not in this trial:** `convert-backup` + `recoverchannel` into self-hosted CLN. On mainnet it needs your own full bitcoind and the LSP to force-close the channel by hand, and the export download can't be decrypted with public tools. It's proven on regtest (matrix 51/51, migrate-out.sh) and stays the last-resort exit in F4.
 
 ## 13. Wrap-up
+- Delete every remaining app connection on hub B (Apps must be empty) and shred every file in `<nwcdir>`.
 - Archive the restore workdir encrypted, and keep the paper phrase until the withdrawal has 6 confirmations. Keep the phrase afterwards too: it controls the node identity.
 - Fill EVIDENCE-TEMPLATE.md. Run every pasted log through `python3 $KIT/tools/redact.py < in > out`, then read the output yourself before publishing.
 

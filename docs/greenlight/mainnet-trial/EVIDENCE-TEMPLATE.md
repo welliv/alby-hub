@@ -33,6 +33,10 @@
 | 7.3 | NWC in-budget pays | … | 2 × 300 | … |
 | 7.4 | NWC overspend refused | … | error code … | … |
 | 7.5 | Revoked connection refused | … | error … | … |
+| 7A.0 | L402 challenges (free) | … | services …, prices … | … |
+| 7A.3 | L402 paid calls | … | calls …/… ok, preimage_ok …/…, tokens accepted …/…, budget delta = price + fee: yes/no | … |
+| 7A.4 | L402 call over budget refused | … | error code … | … |
+| 7A.5 | L402 connection revoked | … | error … | … |
 | 8 | Pending/unclear payment (if it happened) | … | hash …, resolved how …, minutes … | … |
 | 9 | Restart: same node, balances, signer | … | – | … |
 | 9.3 | Receive while hub stopped (optional) | … | outcome … | … |
@@ -53,6 +57,7 @@ For each: **step, UTC time, exact error text (redacted), what the hub showed, wh
 | LSP opening fee | … | advertised … vs actual … |
 | Routing fees (all pays) | … | – |
 | Sent out over Lightning (tests + drain) | … | hashes … |
+| Paid to L402 services (incl. fees) | … | hashes … |
 | Channel close (to on-chain) | … | closing txid … |
 | On-chain withdraw fee | … | txid … |
 | Withdrawn on-chain | … | txid … |

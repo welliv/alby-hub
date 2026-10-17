@@ -1,5 +1,9 @@
 # AGENTS.md
 
+> **Greenlight work: read `docs/greenlight/AGENTS.md` first.** On branch `feat/greenlight-backend`,
+> its rules override this file for anything involving Greenlight, the mainnet trial, real funds,
+> secrets or GitHub actions.
+
 This file provides guidance for AI coding agents working on the Alby Hub repository.
 
 ## Project Overview
