@@ -24,6 +24,16 @@ func (g *GreenlightService) receiveAboveInbound(ctx context.Context, amountMsat,
 	}
 	jit, jitErr := g.lspInvoice(ctx, uint64(amountMsat), description, label)
 	if jitErr == nil {
+		if err := checkJitQuote(uint64(amountMsat), jit.OpeningFeeMsat, g.config.JitMaxFeeMsat); err != nil {
+			// The invoice exists on the node but is never handed out, so
+			// nobody can pay it and no channel is opened.
+			logger.Logger.WithFields(logrus.Fields{
+				"opening_fee_msat": jit.OpeningFeeMsat,
+				"amount_msat":      amountMsat,
+				"max_fee_msat":     g.config.JitMaxFeeMsat,
+			}).Warn("greenlight JIT invoice refused: LSP opening fee too high")
+			return nil, err
+		}
 		expiresAt := int64(jit.ExpiresAt)
 		paymentHash := hex.EncodeToString(jit.PaymentHash)
 		g.rememberJitInvoice(paymentHash, uint64(amountMsat), jit.OpeningFeeMsat)
@@ -82,4 +92,19 @@ func lspErrorReason(err error) string {
 		msg = msg[:200]
 	}
 	return msg
+}
+
+// checkJitQuote refuses a JIT invoice whose advertised LSPS2 opening
+// fee would leave the user with nothing (fee >= amount) or exceeds the
+// operator's optional cap (maxFeeMsat > 0).
+func checkJitQuote(amountMsat, feeMsat, maxFeeMsat uint64) error {
+	if feeMsat >= amountMsat {
+		return fmt.Errorf("cannot receive %d sats: the LSP channel-opening fee (%d sats) is not below the amount",
+			amountMsat/1000, feeMsat/1000)
+	}
+	if maxFeeMsat > 0 && feeMsat > maxFeeMsat {
+		return fmt.Errorf("cannot receive %d sats: the LSP channel-opening fee (%d sats) is above the configured maximum (%d sats, GREENLIGHT_JIT_MAX_FEE_SAT)",
+			amountMsat/1000, feeMsat/1000, maxFeeMsat/1000)
+	}
+	return nil
 }

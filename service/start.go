@@ -587,23 +587,11 @@ func (svc *service) launchGreenlight(ctx context.Context, encryptionKey string) 
 	if network == "" {
 		network = "signet"
 	}
-	// Map hub network labels to the value glcli/-n expects. GL supports
-	// bitcoin | testnet | signet (per docs bitcoin|testnet|regtest and
-	// scheduler; signet is accepted for dev). Default clean unknown -> signet
-	// for backward compat, but pass real networks through so the signer is
-	// spawned against the SAME network as the node (a testnet node without
-	// its local signer attached on testnet is read-only).
-	glNet := network
-	switch network {
-	case "mainnet", "bitcoin":
-		glNet = "bitcoin"
-	case "testnet", "regtest", "signet":
-		glNet = network
-	case "":
-		glNet = "signet"
-	default:
-		logger.Logger.WithField("network", network).Warn("greenlight: unsupported network label, using signet")
-		glNet = "signet"
+	// Map the hub network label to glcli's -n value. Unknown labels are
+	// refused rather than silently mapped to another network.
+	glNet, err := greenlightNetwork(network)
+	if err != nil {
+		return nil, err
 	}
 
 	// Product path (mnemonic set): signer lives at $WORK_DIR/greenlight.
@@ -721,6 +709,11 @@ func (svc *service) launchGreenlight(ctx context.Context, encryptionKey string) 
 		ServerName:    serverName,
 		Network:       glNet,
 		SignerDataDir: signerDir,
+
+		RefuseJitAfterLspViolation: env.GreenlightRefuseJitAfterLspViolation,
+	}
+	if env.GreenlightJitMaxFeeSat > 0 {
+		cfg.JitMaxFeeMsat = env.GreenlightJitMaxFeeSat * 1000
 	}
 	if svc.glSigner != nil {
 		// wire the signer's health state into the node-status surface so
@@ -733,4 +726,21 @@ func (svc *service) launchGreenlight(ctx context.Context, encryptionKey string) 
 		}
 	}
 	return greenlight.NewGreenlightService(ctx, svc.eventPublisher, workdir, cfg)
+}
+
+// greenlightNetwork maps the hub network label to the value glcli -n
+// expects. An unknown label is an error: silently falling back to another
+// network would register or sign against the wrong chain.
+func greenlightNetwork(network string) (string, error) {
+	switch network {
+	case "mainnet", "bitcoin":
+		return "bitcoin", nil
+	case "testnet", "testnet3":
+		return "testnet", nil
+	case "regtest", "signet":
+		return network, nil
+	case "":
+		return "signet", nil
+	}
+	return "", fmt.Errorf("greenlight: unsupported network %q (use bitcoin, testnet, signet or regtest)", network)
 }

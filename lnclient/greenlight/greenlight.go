@@ -56,6 +56,9 @@ type Config struct {
 	// JIT invoices after an LSP is observed skimming more than its
 	// advertised opening_fee_msat. Default false (alert only).
 	RefuseJitAfterLspViolation bool
+	// JitMaxFeeMsat, when > 0, refuses a JIT invoice whose advertised
+	// LSPS2 opening fee is above it. A fee >= the amount is always refused.
+	JitMaxFeeMsat uint64
 }
 
 // SignerStatus carries the signer service's health state for surfacing

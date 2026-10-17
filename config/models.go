@@ -1,10 +1,10 @@
 package config
 
 const (
-	LNDBackendType     = "LND"
-	LDKBackendType     = "LDK"
-	PhoenixBackendType = "PHOENIX"
-	CashuBackendType   = "CASHU"
+	LNDBackendType        = "LND"
+	LDKBackendType        = "LDK"
+	PhoenixBackendType    = "PHOENIX"
+	CashuBackendType      = "CASHU"
 	CLNBackendType        = "CLN"
 	BarkBackendType       = "BARK"
 	GreenlightBackendType = "GREENLIGHT"
@@ -78,6 +78,11 @@ type AppConfig struct {
 	GreenlightNobodyCrt     string `envconfig:"GL_NOBODY_CRT"`
 	GreenlightNobodyKey     string `envconfig:"GL_NOBODY_KEY"`
 	GreenlightGlcliPath     string `envconfig:"GREENLIGHT_GLCLI_PATH"`
+	// Optional hard cap on the LSPS2 opening fee the hub accepts for a JIT
+	// invoice (sats). 0 = no cap beyond "fee must be below the amount".
+	GreenlightJitMaxFeeSat uint64 `envconfig:"GREENLIGHT_JIT_MAX_FEE_SAT"`
+	// Stop minting JIT invoices after an LSP skims more than it advertised.
+	GreenlightRefuseJitAfterLspViolation bool `envconfig:"GREENLIGHT_REFUSE_JIT_AFTER_LSP_VIOLATION"`
 }
 
 func (c *AppConfig) IsDefaultClientId() bool {
