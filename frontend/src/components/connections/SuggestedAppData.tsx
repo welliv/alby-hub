@@ -34,6 +34,7 @@ import payperq from "src/assets/suggested-apps/payperq.png";
 import primal from "src/assets/suggested-apps/primal.png";
 import pullthatupjamie from "src/assets/suggested-apps/pullthatupjamie.png";
 import runstr from "src/assets/suggested-apps/runstr.png";
+import routstrd from "src/assets/suggested-apps/routstrd.png";
 import satsorter from "src/assets/suggested-apps/sat-sorter.png";
 import satoraLogo from "src/assets/suggested-apps/satora.png";
 import sats4ai from "src/assets/suggested-apps/sats4ai.png";
@@ -396,6 +397,69 @@ export const appStoreApps: AppStoreApp[] = (
       logo: sats4ai,
       categories: ["ai"],
       webLink: "https://sats4ai.com",
+    },
+    {
+      id: "routstrd",
+      title: "Routstrd",
+      description: "Local pay-per-request AI",
+      extendedDescription:
+        "A daemon on your machine. It discovers Routstr nodes over Nostr, routes each request to the cheapest provider, and pays per request from a Cashu wallet your Hub refills.",
+      logo: routstrd,
+      hideConnectionQr: true,
+      categories: ["ai"],
+      webLink: "https://routstr.com/routstrd",
+      addedDate: "2026-10-28",
+      installGuide: (
+        <>
+          <ul className="list-inside list-decimal text-muted-foreground">
+            <li>
+              Install{" "}
+              <ExternalLink
+                to="https://github.com/Routstr/routstrd#installation"
+                className="font-medium text-foreground underline"
+              >
+                routstrd
+              </ExternalLink>{" "}
+              and run <code className="text-foreground">routstrd onboard</code>,
+              then <code className="text-foreground">routstrd start</code>.
+            </li>
+            <li>
+              It listens at{" "}
+              <code className="text-foreground">http://127.0.0.1:8008</code>.
+              Point any OpenAI-compatible client at that base URL. To keep it
+              running, use{" "}
+              <code className="text-foreground">routstrd service install</code>.
+            </li>
+          </ul>
+        </>
+      ),
+      finalizeGuide: (
+        <>
+          <div>
+            <h3 className="font-medium">Fund it from your Hub</h3>
+            <ul className="list-inside list-decimal text-muted-foreground">
+              <li>Copy the connection secret below.</li>
+              <li>
+                Run{" "}
+                <code className="text-foreground">routstrd nwc connect</code>{" "}
+                and paste the secret when asked.
+              </li>
+              <li>
+                Turn on auto-refill with{" "}
+                <code className="text-foreground">
+                  routstrd nwc auto-refill on
+                </code>
+                . By default it pulls 1,000 sats when the Cashu balance drops
+                below 500, at most every 5 minutes.
+              </li>
+              <li>
+                Confirm with{" "}
+                <code className="text-foreground">routstrd nwc status</code>.
+              </li>
+            </ul>
+          </div>
+        </>
+      ),
     },
     {
       id: "simpleboost",

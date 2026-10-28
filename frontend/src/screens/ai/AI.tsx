@@ -34,6 +34,7 @@ import openclawLogo from "src/assets/suggested-apps/openclaw.png";
 import opencodeLogo from "src/assets/suggested-apps/opencode.png";
 import payperqLogo from "src/assets/suggested-apps/payperq.png";
 import piLogo from "src/assets/suggested-apps/pi.png";
+import routstrdLogo from "src/assets/suggested-apps/routstrd.png";
 import AppHeader from "src/components/AppHeader";
 import ExternalLink from "src/components/ExternalLink";
 import Loading from "src/components/Loading";
@@ -471,6 +472,34 @@ export function AI() {
                   </p>
                   <p className="text-xs text-muted-foreground/60 mt-3 font-mono">
                     NWC Auto Top-up
+                  </p>
+                </CardContent>
+              </Card>
+            </ExternalLink>
+
+            <ExternalLink to="https://routstr.com/routstrd">
+              <Card className="group relative h-full hover:border-primary/30 transition-colors p-0">
+                <CardContent className="p-4 flex flex-col h-full">
+                  <div className="flex items-center gap-3 mb-3">
+                    <img
+                      src={routstrdLogo}
+                      alt="Routstrd"
+                      className="w-10 h-10 rounded-lg"
+                    />
+                    <div className="flex-1">
+                      <p className="font-semibold">Routstrd</p>
+                      <p className="text-xs text-muted-foreground">
+                        Local AI gateway
+                      </p>
+                    </div>
+                  </div>
+                  <ArrowUpRightIcon className="w-4 h-4 text-muted-foreground/0 group-hover:text-muted-foreground transition-colors absolute top-4 right-4" />
+                  <p className="text-sm text-muted-foreground flex-1">
+                    One OpenAI-compatible URL on your machine. Routstrd picks
+                    the cheapest node and your Hub refills the wallet.
+                  </p>
+                  <p className="text-xs text-muted-foreground/60 mt-3 font-mono">
+                    NWC Auto-refill
                   </p>
                 </CardContent>
               </Card>
